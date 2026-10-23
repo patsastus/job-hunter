@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
@@ -14,14 +14,17 @@ import time
 import urllib.parse
 from datetime import datetime
 
+import ingest
+import migrate
 import models
 import skills_extractor
 from database import engine, SessionLocal
 
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault" if os.path.exists("/vault") else os.path.expanduser("~/vault"))
 
-# Create database tables
+# Create database tables, then bring older databases up to the current columns
 models.Base.metadata.create_all(bind=engine)
+migrate.migrate(engine)
 
 app = FastAPI(title="Job Hunter API")
 
@@ -64,33 +67,30 @@ class JobResponse(JobAd):
 def read_root():
     return {"status": "ok", "message": "Job Hunter API is running"}
 
-@app.post("/api/jobs", response_model=JobResponse)
-def add_job(job: JobAd, db: Session = Depends(get_db)):
-    # Check if job already exists by URL
-    db_job = db.query(models.Job).filter(models.Job.url == job.url).first()
-    if db_job:
-        # Ignore or update? Let's just return existing for now
-        return db_job
-    
-    new_job = models.Job(
-        title=job.title,
-        company=job.company,
-        location=job.location,
-        published=job.published,
-        deadline=job.deadline,
-        description_snippet=job.descriptionSnippet,
-        url=job.url,
-        source=job.source
+class IngestResponse(JobResponse):
+    outcome: str  # "created" | "duplicate"
+    matched_by: str | None = None  # "url" | "fingerprint" for duplicates
+
+def score_new_job(job_id: int):
+    # Own session: runs after the response has been sent, so the capture itself is never blocked on the LLM.
+    db = SessionLocal()
+    try:
+        job = db.query(models.Job).filter(models.Job.id == job_id).first()
+        if job:
+            run_ai_scorer(job, db)
+    finally:
+        db.close()
+
+@app.post("/api/jobs", response_model=IngestResponse)
+def add_job(job: ingest.JobIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    result = ingest.ingest(db, job)
+    if result.created:
+        background_tasks.add_task(score_new_job, result.job.id)
+    return IngestResponse(
+        **JobResponse.model_validate(result.job, from_attributes=True).model_dump(),
+        outcome="created" if result.created else "duplicate",
+        matched_by=result.matched_by,
     )
-    db.add(new_job)
-    db.commit()
-    db.refresh(new_job)
-    
-    # Run AI Scoring
-    run_ai_scorer(new_job, db)
-    db.refresh(new_job)
-    
-    return new_job
 
 @app.get("/api/jobs", response_model=List[JobResponse])
 def get_jobs(db: Session = Depends(get_db)):

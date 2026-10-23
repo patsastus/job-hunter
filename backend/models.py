@@ -15,7 +15,17 @@ class Job(Base):
     description_snippet = Column(Text, nullable=True)
     url = Column(String, unique=True, index=True)
     source = Column(String, default="extension")
-    
+
+    # Capture details
+    salary = Column(String, nullable=True)
+    job_type = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    apply_url = Column(String, nullable=True)
+    fingerprint = Column(String, nullable=True, index=True)  # title+company+location identity, see ingest.py
+    raw_payload = Column(Text, nullable=True)  # JSON of the untouched capture
+    first_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+
     # Tracking
     status = Column(String, default="new") # options: new, saved, rejected, applied
     

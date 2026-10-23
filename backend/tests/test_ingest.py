@@ -1,0 +1,125 @@
+import datetime
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+import ingest
+import migrate
+import models
+from database import SessionLocal, engine
+from main import app
+
+
+@pytest.fixture
+def db():
+    models.Base.metadata.drop_all(bind=engine)
+    models.Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    yield session
+    session.close()
+
+
+def job(**kw):
+    base = dict(title="Backend Developer", company="Acme Oy", location="Helsinki",
+                url="https://duunitori.fi/tyopaikat/tyo/backend-dev-abc-123")
+    return ingest.JobIn(**{**base, **kw})
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2026-09-19", "2026-09-19"),
+    ("2026-09-19T10:00:00+03:00", "2026-09-19"),
+    ("27.8.2026", "2026-08-27"),
+    ("1.12.2026", "2026-12-01"),
+    ("31.2.2026", None),
+    ("3 days ago", "2026-10-20"),
+    ("garbage", None),
+    ("", None),
+    (None, None),
+])
+def test_normalize_date(raw, expected):
+    assert ingest.normalize_date(raw, today=datetime.date(2026, 10, 23)) == expected
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://www.duunitori.fi/tyopaikat/tyo/x-1?utm_source=a#top", "https://duunitori.fi/tyopaikat/tyo/x-1"),
+    ("https://www.linkedin.com/jobs/view/123456/?trackingId=zz", "https://www.linkedin.com/jobs/view/123456"),
+    ("https://www.linkedin.com/jobs/view/dev-at-acme-123456", "https://www.linkedin.com/jobs/view/123456"),
+    ("https://www.linkedin.com/jobs/collections/recommended/?currentJobId=987", "https://www.linkedin.com/jobs/view/987"),
+])
+def test_canonical_url(url, expected):
+    assert ingest.canonical_url(url) == expected
+
+
+def test_fingerprint_ignores_case_punctuation_and_company_suffix():
+    a = ingest.fingerprint("Backend Developer (m/f)", "Acme Oy", "Helsinki, Finland")
+    b = ingest.fingerprint("backend developer m f", "ACME", "helsinki")
+    assert a == b
+    assert a != ingest.fingerprint("Backend Developer (m/f)", "Acme Oy", "Tampere")
+
+
+def test_create_stores_normalised_fields_and_raw(db):
+    r = ingest.ingest(db, job(published="27.8.2026", deadline="2026-11-01", raw={"jsonld": {"a": 1}}))
+    assert r.created and r.matched_by is None
+    assert r.job.published == "2026-08-27" and r.job.deadline == "2026-11-01"
+    assert r.job.first_seen_at and r.job.last_seen_at
+    assert '"jsonld"' in r.job.raw_payload
+
+
+def test_same_url_is_duplicate_and_preserves_user_state(db):
+    first = ingest.ingest(db, job(descriptionSnippet="short")).job
+    first.status = "applied"
+    first.fit_score = 80
+    db.commit()
+    again = ingest.ingest(db, job(url=first.url + "?utm=x", descriptionSnippet="a much longer description", salary="3000"))
+    assert not again.created and again.matched_by == "url"
+    assert again.job.id == first.id
+    assert again.job.status == "applied" and again.job.fit_score == 80
+    assert again.job.description_snippet == "a much longer description"
+    assert again.job.salary == "3000"
+    assert db.query(models.Job).count() == 1
+
+
+def test_repost_with_new_url_matches_by_fingerprint(db):
+    first = ingest.ingest(db, job()).job
+    repost = ingest.ingest(db, job(url="https://duunitori.fi/tyopaikat/tyo/backend-dev-xyz-999"))
+    assert not repost.created and repost.matched_by == "fingerprint"
+    assert repost.job.id == first.id
+    assert db.query(models.Job).count() == 1
+
+
+def test_recapture_does_not_overwrite_existing_fields(db):
+    first = ingest.ingest(db, job(salary="3000")).job
+    ingest.ingest(db, job(salary="9999"))
+    db.refresh(first)
+    assert first.salary == "3000"
+
+
+def test_api_created_then_duplicate(db):
+    client = TestClient(app)
+    body = {"title": "Dev", "company": "Beta", "url": "https://x.test/job/1", "published": "27.8.2026"}
+    r1 = client.post("/api/jobs", json=body)
+    assert r1.status_code == 200 and r1.json()["outcome"] == "created"
+    assert r1.json()["published"] == "2026-08-27"
+    r2 = client.post("/api/jobs", json=body)
+    assert r2.json()["outcome"] == "duplicate" and r2.json()["matched_by"] == "url"
+    assert r2.json()["id"] == r1.json()["id"]
+    assert len(client.get("/api/jobs").json()) == 1
+
+
+def test_migrate_upgrades_old_schema_and_is_idempotent(tmp_path):
+    from sqlalchemy import create_engine
+    old = create_engine(f"sqlite:///{tmp_path}/old.db")
+    with old.begin() as c:
+        c.execute(text("CREATE TABLE jobs (id INTEGER PRIMARY KEY, title VARCHAR, company VARCHAR, location VARCHAR, "
+                       "published VARCHAR, description_snippet TEXT, url VARCHAR, source VARCHAR, status VARCHAR, "
+                       "fit_score INTEGER, fit_reason TEXT, created_at DATETIME)"))
+        c.execute(text("INSERT INTO jobs (title, company, location, published, url, status, created_at) VALUES "
+                       "('Dev', 'Acme Oy', 'Espoo', '27.8.2026', 'https://a/1', 'saved', '2026-09-01 10:00:00')"))
+    migrate.migrate(old)
+    migrate.migrate(old)
+    with old.connect() as c:
+        row = c.execute(text("SELECT published, status, fingerprint, first_seen_at FROM jobs")).one()
+    assert row.published == "2026-08-27" and row.status == "saved"
+    assert row.fingerprint == ingest.fingerprint("Dev", "Acme Oy", "Espoo")
+    assert row.first_seen_at is not None

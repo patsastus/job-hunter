@@ -1,0 +1,45 @@
+# Pinned: the central gateway (~/projects/caddy/Caddyfile) routes to job_hunter-*-1 container names
+name: job_hunter
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - frontend
+      - backend
+
+  backend:
+    build: 
+      context: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+      - /home/nraatika/projects/obsidian-vault/HiveNotes:/vault # Mount Obsidian vault for application notes
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VAULT_PATH=/vault
+
+  scraper:
+    build: 
+      context: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python scraper.py
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    # Using Vite's dev server
+    command: npm run dev -- --host 0.0.0.0 --port 5173

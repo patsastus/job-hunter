@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Job Scraper</h1>
+    <p id="status-text">Checking page...</p>
+    
+    <div class="actions">
+      <button id="scrape-btn" disabled>Scrape & Download</button>
+      <label>
+        <input type="checkbox" id="append-checkbox" checked> Append to existing
+      </label>
+      <input type="file" id="upload-file" accept=".md" style="display: none;">
+      <button id="upload-btn" class="secondary">Upload existing .md</button>
+      
+      <button id="clear-btn" class="danger">Clear saved data (<span id="saved-count">0</span>)</button>
+    </div>
+    <div id="result-area"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

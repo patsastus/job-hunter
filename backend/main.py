@@ -1,0 +1,632 @@
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import List
+import asyncio
+import json
+import os
+import re
+import threading
+import time
+import urllib.parse
+from datetime import datetime
+
+import models
+import skills_extractor
+from database import engine, SessionLocal
+
+VAULT_PATH = os.environ.get("VAULT_PATH", "/vault" if os.path.exists("/vault") else os.path.expanduser("~/vault"))
+
+# Create database tables
+models.Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Job Hunter API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://jobs.test", "https://jobs.test"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Pydantic schema for incoming jobs
+class JobAd(BaseModel):
+    title: str
+    company: str
+    location: str | None = None
+    published: str | None = None
+    deadline: str | None = None
+    descriptionSnippet: str | None = None
+    url: str
+    source: str = "extension"
+
+class JobResponse(JobAd):
+    id: int
+    status: str
+    fit_score: int | None
+    fit_reason: str | None
+
+    class Config:
+        from_attributes = True
+
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Job Hunter API is running"}
+
+@app.post("/api/jobs", response_model=JobResponse)
+def add_job(job: JobAd, db: Session = Depends(get_db)):
+    # Check if job already exists by URL
+    db_job = db.query(models.Job).filter(models.Job.url == job.url).first()
+    if db_job:
+        # Ignore or update? Let's just return existing for now
+        return db_job
+    
+    new_job = models.Job(
+        title=job.title,
+        company=job.company,
+        location=job.location,
+        published=job.published,
+        deadline=job.deadline,
+        description_snippet=job.descriptionSnippet,
+        url=job.url,
+        source=job.source
+    )
+    db.add(new_job)
+    db.commit()
+    db.refresh(new_job)
+    
+    # Run AI Scoring
+    run_ai_scorer(new_job, db)
+    db.refresh(new_job)
+    
+    return new_job
+
+@app.get("/api/jobs", response_model=List[JobResponse])
+def get_jobs(db: Session = Depends(get_db)):
+    return db.query(models.Job).order_by(models.Job.id.desc()).all()
+
+class JobUpdate(BaseModel):
+    status: str
+
+@app.patch("/api/jobs/{job_id}", response_model=JobResponse)
+def update_job_status(job_id: int, job_update: JobUpdate, db: Session = Depends(get_db)):
+    db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not db_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    db_job.status = job_update.status
+    db.commit()
+    db.refresh(db_job)
+    return db_job
+
+@app.post("/api/jobs/{job_id}/export-to-obsidian")
+def export_job_to_obsidian(job_id: int, db: Session = Depends(get_db)):
+    db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not db_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    target_dir = os.path.join(VAULT_PATH, "Job Applications", "Active")
+    os.makedirs(target_dir, exist_ok=True)
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    year_month = datetime.now().strftime("%Y-%m")
+
+    # Clean filename: "YYYY-MM - Company - Role.md"
+    safe_company = re.sub(r'[\\/*?:"<>|]', "", db_job.company or "Unknown").strip()
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", db_job.title or "Role").strip()[:50]
+    filename = f"{year_month} - {safe_company} - {safe_title}.md"
+    filepath = os.path.join(target_dir, filename)
+
+    # Escape quotes for YAML frontmatter
+    yaml_company = (db_job.company or "").replace('"', '\\"')
+    yaml_title = (db_job.title or "").replace('"', '\\"')
+    yaml_location = (db_job.location or "").replace('"', '\\"')
+    yaml_url = (db_job.url or "").replace('"', '\\"')
+    yaml_deadline = (db_job.deadline or "").replace('"', '\\"')
+    fit_score_val = db_job.fit_score if db_job.fit_score is not None else 'null'
+
+    linked_skills = [js.skill.name for js in db_job.job_skills if js.skill]
+    skills_yaml = "\n".join([f"  - \"{s}\"" for s in linked_skills])
+    skills_block = f"skills:\n{skills_yaml}" if linked_skills else "skills: []"
+
+    content = f"""---
+tags:
+  - job-app
+status: Applied
+company: "{yaml_company}"
+role: "{yaml_title}"
+location: "{yaml_location}"
+salary: ""
+date_applied: {today_str}
+last_contact: {today_str}
+deadline: "{yaml_deadline}"
+url: "{yaml_url}"
+source: "{db_job.source}"
+fit_score: {fit_score_val}
+{skills_block}
+cv_file: ""
+cv_git_hash: ""
+contact_person: ""
+contact_email: ""
+---
+
+# {db_job.company} — {db_job.title}
+
+## 🎯 Positioning & Strategy
+- **Why this role?**: 
+- **AI Fit Reason**: {db_job.fit_reason or "N/A"}
+- **Key Skills Catalogued**: {', '.join(linked_skills) if linked_skills else 'None specified'}
+
+---
+
+## 📤 Submission Packet
+- **CV Used**: 
+- **Cover Letter**:
+> (Draft or copy submitted cover letter here)
+
+---
+
+## 📝 Preserved Job Description
+> [!NOTE] Preserved Job Ad
+{db_job.description_snippet or 'No description snippet available.'}
+
+---
+
+## 📞 Communication & Interview Log
+- **{today_str}**: Application created from {db_job.source} and marked Applied.
+
+---
+
+## 💡 Post-Mortem & Retrospective
+- **Outcome**: 
+- **Feedback received**: 
+- **Key takeaways**: 
+"""
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    # Mark as applied in DB
+    db_job.status = "applied"
+    db.commit()
+    db.refresh(db_job)
+
+    # Generate Obsidian URI: obsidian://open?vault=HiveNotes&file=Job%20Applications/Active/{safe_encoded_filename}
+    encoded_file_path = urllib.parse.quote(f"Job Applications/Active/{filename.removesuffix('.md')}")
+    obsidian_uri = f"obsidian://open?vault=HiveNotes&file={encoded_file_path}"
+
+    return {
+        "status": "ok",
+        "path": filepath,
+        "filename": filename,
+        "obsidian_uri": obsidian_uri,
+        "job_id": db_job.id,
+        "job_status": db_job.status
+    }
+
+# Skills & Buzzwords Catalog Endpoints
+class JobSkillsUpdate(BaseModel):
+    skills: List[str]
+    update_status: str | None = None
+
+class SkillSummary(BaseModel):
+    id: int
+    name: str
+    canonical_name: str | None = None
+    category: str | None = None
+    total_count: int
+    applied_count: int
+    rejected_count: int
+    saved_count: int
+
+@app.get("/api/jobs/{job_id}/skills")
+def get_job_skills(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    linked = [js.skill.name for js in job.job_skills if js.skill]
+    return {"job_id": job.id, "skills": linked}
+
+@app.get("/api/jobs/{job_id}/extract-skills")
+def extract_job_skills(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    linked = [js.skill.name for js in job.job_skills if js.skill]
+    extracted = skills_extractor.extract_candidate_skills(job, db)
+    
+    # Merge existing + extracted preserving order
+    combined = list(linked)
+    for s in extracted:
+        if s.lower() not in [x.lower() for x in combined]:
+            combined.append(s)
+
+    return {
+        "job_id": job.id,
+        "already_saved": linked,
+        "candidate_skills": combined
+    }
+
+@app.post("/api/jobs/{job_id}/skills")
+def save_job_skills(job_id: int, payload: JobSkillsUpdate, db: Session = Depends(get_db)):
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Clear existing associations for this job
+    db.query(models.JobSkill).filter(models.JobSkill.job_id == job.id).delete()
+
+    normalized_skills = []
+    seen = set()
+    for raw_skill in payload.skills:
+        clean = raw_skill.strip()
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            normalized_skills.append(clean)
+
+    for skill_name in normalized_skills:
+        # Check or create skill in catalog
+        skill = db.query(models.Skill).filter(func.lower(models.Skill.name) == skill_name.lower()).first()
+        if not skill:
+            skill = models.Skill(name=skill_name)
+            db.add(skill)
+            db.commit()
+            db.refresh(skill)
+
+        job_skill = models.JobSkill(job_id=job.id, skill_id=skill.id)
+        db.add(job_skill)
+
+    if payload.update_status:
+        job.status = payload.update_status
+
+    db.commit()
+    db.refresh(job)
+
+    return {
+        "status": "ok",
+        "job_id": job.id,
+        "job_status": job.status,
+        "skills": normalized_skills
+    }
+
+@app.get("/api/skills", response_model=List[SkillSummary])
+def get_skills_summary(db: Session = Depends(get_db)):
+    skills = db.query(models.Skill).all()
+    results = []
+    for s in skills:
+        total_count = len(s.job_skills)
+        applied_count = sum(1 for js in s.job_skills if js.job and js.job.status == "applied")
+        rejected_count = sum(1 for js in s.job_skills if js.job and js.job.status == "rejected")
+        saved_count = sum(1 for js in s.job_skills if js.job and js.job.status == "saved")
+        results.append({
+            "id": s.id,
+            "name": s.name,
+            "canonical_name": s.canonical_name,
+            "category": s.category,
+            "total_count": total_count,
+            "applied_count": applied_count,
+            "rejected_count": rejected_count,
+            "saved_count": saved_count
+        })
+    results.sort(key=lambda x: x["total_count"], reverse=True)
+    return results
+
+
+# Global state for scoring progress & SSE broadcasting
+scoring_state = {
+    "is_running": False,
+    "total": 0,
+    "completed": 0,
+    "current_job": ""
+}
+subscribers: list[asyncio.Queue] = []
+main_loop = None
+
+def broadcast_event(event_type: str, data: dict):
+    global main_loop
+    if not subscribers:
+        return
+    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    for q in list(subscribers):
+        try:
+            if main_loop and main_loop.is_running():
+                main_loop.call_soon_threadsafe(q.put_nowait, payload)
+        except Exception:
+            pass
+
+def background_batch_scorer():
+    global scoring_state
+    db = SessionLocal()
+    try:
+        unscored_jobs = db.query(models.Job).filter(models.Job.fit_score == None, models.Job.status == 'new').all()
+        scoring_state["is_running"] = True
+        scoring_state["total"] = len(unscored_jobs)
+        scoring_state["completed"] = 0
+        scoring_state["current_job"] = ""
+
+        broadcast_event("state", {
+            "isRunning": True,
+            "total": scoring_state["total"],
+            "completed": 0,
+            "currentJob": "Starting..."
+        })
+
+        for job in unscored_jobs:
+            # Re-fetch inside loop to ensure we have latest state
+            job_to_score = db.query(models.Job).filter(models.Job.id == job.id).first()
+            if job_to_score and job_to_score.fit_score is None:
+                scoring_state["current_job"] = job_to_score.title
+                broadcast_event("state", {
+                    "isRunning": True,
+                    "total": scoring_state["total"],
+                    "completed": scoring_state["completed"],
+                    "currentJob": job_to_score.title
+                })
+
+                run_ai_scorer(job_to_score, db)
+                db.refresh(job_to_score)
+                scoring_state["completed"] += 1
+
+                job_data = {
+                    "id": job_to_score.id,
+                    "title": job_to_score.title,
+                    "company": job_to_score.company,
+                    "location": job_to_score.location,
+                    "published": job_to_score.published,
+                    "deadline": job_to_score.deadline,
+                    "descriptionSnippet": job_to_score.description_snippet,
+                    "url": job_to_score.url,
+                    "status": job_to_score.status,
+                    "fit_score": job_to_score.fit_score,
+                    "fit_reason": job_to_score.fit_reason,
+                    "source": job_to_score.source
+                }
+                broadcast_event("job_scored", {
+                    "isRunning": True,
+                    "total": scoring_state["total"],
+                    "completed": scoring_state["completed"],
+                    "currentJob": job_to_score.title,
+                    "job": job_data
+                })
+
+                # Sleep 4.1 seconds to stay under Gemini's 15 Requests Per Minute limit (1 req / 4s = 15 RPM)
+                time.sleep(4.1)
+    finally:
+        scoring_state["is_running"] = False
+        scoring_state["current_job"] = ""
+        broadcast_event("done", {
+            "isRunning": False,
+            "total": scoring_state["total"],
+            "completed": scoring_state["completed"],
+            "currentJob": ""
+        })
+        db.close()
+
+@app.post("/api/jobs/score-all")
+def score_all_jobs():
+    if scoring_state["is_running"]:
+        return {"status": "Batch scoring is already running."}
+    thread = threading.Thread(target=background_batch_scorer, daemon=True)
+    thread.start()
+    return {"status": "Batch scoring started."}
+
+@app.get("/api/jobs/score-stream")
+async def score_stream(request: Request):
+    global main_loop
+    if main_loop is None:
+        main_loop = asyncio.get_running_loop()
+
+    queue = asyncio.Queue()
+    subscribers.append(queue)
+
+    async def event_generator():
+        try:
+            # Send current state immediately upon client connection
+            initial_event = {
+                "isRunning": scoring_state["is_running"],
+                "total": scoring_state["total"],
+                "completed": scoring_state["completed"],
+                "currentJob": scoring_state["current_job"]
+            }
+            yield f"event: state\ndata: {json.dumps(initial_event)}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield msg
+                except asyncio.TimeoutError:
+                    # Keep-alive comment
+                    yield ": ping\n\n"
+        finally:
+            if queue in subscribers:
+                subscribers.remove(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.post("/api/jobs/{job_id}/score", response_model=JobResponse)
+def score_job(job_id: int, db: Session = Depends(get_db)):
+    db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not db_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    run_ai_scorer(db_job, db)
+    db.refresh(db_job)
+    return db_job
+
+# Keyword endpoints
+class KeywordBase(BaseModel):
+    word: str
+
+class KeywordResponse(KeywordBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+@app.get("/api/keywords", response_model=List[KeywordResponse])
+def get_keywords(db: Session = Depends(get_db)):
+    return db.query(models.Keyword).all()
+
+@app.post("/api/keywords", response_model=KeywordResponse)
+def add_keyword(kw: KeywordBase, db: Session = Depends(get_db)):
+    existing = db.query(models.Keyword).filter(models.Keyword.word == kw.word).first()
+    if existing:
+        return existing
+    new_kw = models.Keyword(word=kw.word)
+    db.add(new_kw)
+    db.commit()
+    db.refresh(new_kw)
+    return new_kw
+
+@app.delete("/api/keywords/{kw_id}")
+def delete_keyword(kw_id: int, db: Session = Depends(get_db)):
+    kw = db.query(models.Keyword).filter(models.Keyword.id == kw_id).first()
+    if kw:
+        db.delete(kw)
+        db.commit()
+    return {"status": "deleted"}
+
+# Profile Document endpoints
+class DocumentBase(BaseModel):
+    title: str
+    content: str
+
+class DocumentResponse(DocumentBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+@app.get("/api/documents", response_model=List[DocumentResponse])
+def get_documents(db: Session = Depends(get_db)):
+    return db.query(models.ProfileDocument).all()
+
+@app.post("/api/documents", response_model=DocumentResponse)
+def add_document(doc: DocumentBase, db: Session = Depends(get_db)):
+    new_doc = models.ProfileDocument(title=doc.title, content=doc.content)
+    db.add(new_doc)
+    db.commit()
+    db.refresh(new_doc)
+    return new_doc
+
+@app.delete("/api/documents/{doc_id}")
+def delete_document(doc_id: int, db: Session = Depends(get_db)):
+    doc = db.query(models.ProfileDocument).filter(models.ProfileDocument.id == doc_id).first()
+    if doc:
+        db.delete(doc)
+        db.commit()
+    return {"status": "deleted"}
+
+# Settings Endpoints
+class SettingUpdate(BaseModel):
+    key: str
+    value: str
+
+@app.get("/api/settings")
+def get_settings(db: Session = Depends(get_db)):
+    settings = db.query(models.SystemSetting).all()
+    # Mask the API key before sending to frontend
+    res = {}
+    for s in settings:
+        if s.key == "api_key" and s.value:
+            res[s.key] = s.value[:4] + "..." + s.value[-4:] if len(s.value) > 8 else "***"
+        else:
+            res[s.key] = s.value
+    return res
+
+@app.post("/api/settings")
+def update_setting(setting: SettingUpdate, db: Session = Depends(get_db)):
+    db_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == setting.key).first()
+    # If the user sends masked string, ignore it so we don't overwrite the real key
+    if setting.key == "api_key" and "..." in setting.value:
+        return {"status": "ignored"}
+        
+    if db_setting:
+        db_setting.value = setting.value
+    else:
+        db_setting = models.SystemSetting(key=setting.key, value=setting.value)
+        db.add(db_setting)
+    db.commit()
+    return {"status": "updated"}
+
+def run_ai_scorer(job: models.Job, db: Session):
+    docs = db.query(models.ProfileDocument).all()
+    if not docs:
+        job.fit_score = None
+        job.fit_reason = "No profile documents provided for scoring."
+        db.commit()
+        return
+
+    context_text = "\n\n".join([f"--- {d.title} ---\n{d.content}" for d in docs])
+    
+    # Get settings
+    provider_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "llm_provider").first()
+    key_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "api_key").first()
+    model_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "gemini_model").first()
+    
+    provider = provider_setting.value if provider_setting else "gemini"
+    api_key = key_setting.value if key_setting else ""
+    model_name = model_setting.value if model_setting else "gemini-3.5-flash-lite"
+    
+    if not api_key:
+        job.fit_score = None
+        job.fit_reason = f"API Key missing for {provider}."
+        db.commit()
+        return
+
+    prompt = f"""You are an expert technical recruiter matching a candidate to a job.
+Candidate Profile:
+{context_text}
+
+Job Ad ({job.company} - {job.title}):
+{job.description_snippet}
+
+Evaluate the fit on a scale of 0 to 100. Be realistic and critical based on the required technologies and experience.
+Return ONLY valid JSON in this exact format:
+{{"score": 85, "reason": "One short sentence explaining the score."}}
+"""
+
+    import requests
+    import json
+
+    try:
+        if provider == "gemini":
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"response_mime_type": "application/json"}
+            }
+            res = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=20)
+            res.raise_for_status()
+            text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+            result = json.loads(text)
+            job.fit_score = result.get("score")
+            job.fit_reason = result.get("reason")
+        else:
+            job.fit_score = None
+            job.fit_reason = f"Provider '{provider}' is not yet fully implemented in the backend."
+    except Exception as e:
+        job.fit_score = None
+        job.fit_reason = f"AI Error: {str(e)}"
+    
+    db.commit()

@@ -125,21 +125,23 @@ extension/
   test/                  # parser tests against exported snapshots
 ```
 
-Plain ES modules, no bundler, on purpose: nothing hides what the browser loads.
+No bundler, on purpose: nothing hides what the browser loads. The background worker, popup and options
+page are ES modules. **Content scripts cannot be ES modules**, so the parsers are classic scripts that
+attach to a shared `JH` namespace and are listed in order in the manifest's `content_scripts.js` (each
+file also exports itself via `module.exports` so Node tests can load it).
 
-## Backend additions
+## Backend additions (done, merged in `e1305e1`)
 
-| Change | Why |
+| Change | Notes |
 |---|---|
-| `POST /api/score-preview` (JobIn -> `{id, status, fit_score, fit_reason, cached}`) | Score on view. Scores from the supplied text, discards it, upserts a `seen` row with metadata only. If the ad already has a score, returns it without calling the LLM |
-| `seen` status | Viewed-not-decided. Excluded from the triage lists and from the batch scorer (which only takes `new`) |
-| `POST /api/jobs` gains optional `status` | Save sets `saved` on the existing `seen` row, filling description and raw capture. Never downgrades `applied` |
-| `PATCH /api/jobs/:id` extended (title, company, location, deadline, status, notes) | Edit and reject; today only status can change |
+| `POST /api/score-preview` (JobIn -> `{id, status, fit_score, fit_reason, cached, created}`) | Scores from the supplied text, discards it, upserts a `seen` row with metadata only. `?force=true` re-scores. A stored score is reused only while its `scored_with` stamp matches the current profile and prompt |
+| `seen` status | Viewed-not-decided. Hidden from the web app's triage tabs and ignored by the batch scorer |
+| `POST /api/jobs` accepts `status` | Save sets `saved` on the existing `seen` row, filling description and raw capture. Never downgrades `applied`; `seen` is rejected (422) |
+| `PATCH /api/jobs/:id` (status, title, company, location, deadline, notes) | Only the fields sent change. **Undo is `status: "seen"`**, which drops the text the save stored (409 for `applied` jobs). There is no separate soft delete |
+| `GET /api/jobs/:id` | New (the first version of this doc wrongly said it existed) |
+| `POST /api/jobs/lookup` (up to 200 URLs) | Status and score per URL, for list highlighting and the "already known" badge |
 | `notes` column | The popup note field |
-| Soft delete / discard | Undo |
-| `POST /api/jobs/lookup` (list of URLs -> status and score each) | List highlighting and the "already known" badge |
-| Skip LLM on rows that already have a score (`score_new_job`) | A saved ad that was scored on view is not scored twice |
-| Web app: hide `seen` by default, add a "Viewed" filter | Keeps triage clean |
+| `scored_with` column, distilled profile (`/api/profile/distilled`) | Scores carry the profile version; the scoring profile is short and user-edited |
 
 ## Out of scope for now
 
@@ -150,8 +152,7 @@ description).
 
 ## Build order
 
-1. Backend: `score-preview`, `seen` status, lookup, extended PATCH, notes, soft delete; tests; web app
-   hides `seen`.
+1. ~~Backend: `score-preview`, `seen` status, lookup, extended PATCH, notes; tests.~~ Done.
 2. Extension skeleton: both manifests, shim, a Duunitori ad page produces a score on the badge.
 3. Popup with Save / Reject / Re-score, shortcuts, per-tab badge states.
 4. Save queue with retry, offline state.

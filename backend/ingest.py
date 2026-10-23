@@ -114,6 +114,10 @@ def ingest(db: Session, job: JobIn, now: datetime.datetime | None = None) -> Ing
     fp = fingerprint(job.title, job.company, job.location)
 
     existing = db.query(models.Job).filter(models.Job.url.in_([url, job.url])).first()
+    if not existing:
+        alias = db.query(models.JobUrl).filter(models.JobUrl.url.in_([url, job.url])).first()
+        if alias:
+            existing = db.get(models.Job, alias.job_id)
     matched_by = "url" if existing else None
     if not existing:
         existing = db.query(models.Job).filter(models.Job.fingerprint == fp).first()

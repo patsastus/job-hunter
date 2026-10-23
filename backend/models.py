@@ -38,6 +38,14 @@ class Job(Base):
     # Relationships
     job_skills = relationship("JobSkill", back_populates="job", cascade="all, delete-orphan")
 
+class JobUrl(Base):
+    """Extra URLs that resolve to a job, e.g. reposts merged into it. Lets ingest() recognise them."""
+    __tablename__ = "job_urls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    url = Column(String, unique=True, index=True)
+
 class Skill(Base):
     __tablename__ = "skills"
 

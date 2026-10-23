@@ -123,3 +123,43 @@ def test_migrate_upgrades_old_schema_and_is_idempotent(tmp_path):
     assert row.published == "2026-08-27" and row.status == "saved"
     assert row.fingerprint == ingest.fingerprint("Dev", "Acme Oy", "Espoo")
     assert row.first_seen_at is not None
+
+
+def test_dedupe_keeps_most_advanced_status_and_merges_data(db):
+    import dedupe
+    a = ingest.ingest(db, job(url="https://x.test/a")).job
+    b = models.Job(title=a.title, company=a.company, location=a.location, url="https://x.test/b",
+                   fingerprint=a.fingerprint, status="saved", fit_score=70, salary="4000")
+    c = models.Job(title=a.title, company=a.company, location=a.location, url="https://x.test/c",
+                   fingerprint=a.fingerprint, status="rejected")
+    db.add_all([b, c])
+    db.commit()
+    skill = models.Skill(name="Go")
+    db.add(skill)
+    db.commit()
+    db.add(models.JobSkill(job_id=c.id, skill_id=skill.id))
+    db.commit()
+
+    assert len(dedupe.merge_duplicates(db, apply=False)) == 1
+    assert db.query(models.Job).count() == 3  # dry run changes nothing
+
+    report = dedupe.merge_duplicates(db, apply=True)
+    assert report[0]["keep"][0] == b.id  # saved beats rejected/new
+    rows = db.query(models.Job).all()
+    assert [r.id for r in rows] == [b.id]
+    assert rows[0].fit_score == 70 and [js.skill.name for js in rows[0].job_skills] == ["Go"]
+    assert {u.url for u in db.query(models.JobUrl)} == {"https://x.test/a", "https://x.test/c"}
+    assert dedupe.merge_duplicates(db, apply=True) == []  # idempotent
+
+
+def test_merged_away_url_is_not_recreated(db):
+    import dedupe
+    a = ingest.ingest(db, job(url="https://x.test/a")).job
+    b = models.Job(title=a.title, company=a.company, location=a.location, url="https://x.test/b",
+                   fingerprint=a.fingerprint, status="applied")
+    db.add(b)
+    db.commit()
+    dedupe.merge_duplicates(db, apply=True)
+    again = ingest.ingest(db, job(url="https://x.test/a", title="Completely Different Title"))
+    assert not again.created and again.matched_by == "url" and again.job.id == b.id
+    assert db.query(models.Job).count() == 1

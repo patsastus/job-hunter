@@ -18,6 +18,7 @@ NEW_JOB_COLUMNS = {
     "raw_payload": "TEXT",
     "first_seen_at": "DATETIME",
     "last_seen_at": "DATETIME",
+    "notes": "TEXT",
     "deadline": "VARCHAR",
 }
 

@@ -9,15 +9,19 @@ import json
 import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import models
 
 COMPANY_SUFFIXES = {"oy", "oyj", "ab", "ltd", "inc", "gmbh", "as"}
 RELATIVE_UNITS = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30}
+
+
+JobStatus = Literal["new", "seen", "saved", "rejected", "applied"]
 
 
 class JobIn(BaseModel):
@@ -30,6 +34,8 @@ class JobIn(BaseModel):
     descriptionSnippet: str | None = None
     url: str
     source: str = "extension"
+    # Only used by POST /api/jobs: the status a save/reject should leave the job in.
+    status: JobStatus | None = None
     salary: str | None = None
     jobType: str | None = None
     industry: str | None = None
@@ -108,51 +114,60 @@ def _clean(value: str | None) -> str | None:
     return value or None
 
 
-def ingest(db: Session, job: JobIn, now: datetime.datetime | None = None) -> IngestResult:
-    now = now or datetime.datetime.utcnow()
-    url = canonical_url(job.url)
-    fp = fingerprint(job.title, job.company, job.location)
-
-    existing = db.query(models.Job).filter(models.Job.url.in_([url, job.url])).first()
+def find_existing(db: Session, url: str, fp: str, raw_url: str | None = None) -> tuple[models.Job | None, str | None]:
+    """Look an ad up by URL (including merged-away aliases), then by fingerprint.
+    `raw_url` is the URL as sent, which matches rows stored before URLs were canonicalised."""
+    urls = [url] if not raw_url or raw_url == url else [url, raw_url]
+    existing = db.query(models.Job).filter(models.Job.url.in_(urls)).first()
     if not existing:
-        alias = db.query(models.JobUrl).filter(models.JobUrl.url.in_([url, job.url])).first()
+        alias = db.query(models.JobUrl).filter(models.JobUrl.url.in_(urls)).first()
         if alias:
             existing = db.get(models.Job, alias.job_id)
-    matched_by = "url" if existing else None
-    if not existing:
-        existing = db.query(models.Job).filter(models.Job.fingerprint == fp).first()
-        matched_by = "fingerprint" if existing else None
-
-    description = _clean(job.descriptionSnippet)
-
     if existing:
-        # Re-seeing an ad refreshes it but never touches status, score or anything the user may have edited.
-        existing.last_seen_at = now
-        if not existing.fingerprint:
-            existing.fingerprint = fp
+        return existing, "url"
+    existing = db.query(models.Job).filter(models.Job.fingerprint == fp).first()
+    return (existing, "fingerprint") if existing else (None, None)
+
+
+def _lookup_keys(job: JobIn) -> tuple[str, str]:
+    return canonical_url(job.url), fingerprint(job.title, job.company, job.location)
+
+
+def _refresh(existing: models.Job, job: JobIn, fp: str, now: datetime.datetime, store_text: bool) -> None:
+    """Re-seeing an ad refreshes it, but never overwrites anything already set."""
+    existing.last_seen_at = now
+    if not existing.fingerprint:
+        existing.fingerprint = fp
+    for attr, incoming in (
+        ("salary", job.salary), ("job_type", job.jobType), ("industry", job.industry),
+        ("apply_url", job.applyUrl), ("location", job.location),
+    ):
+        if not getattr(existing, attr) and _clean(incoming):
+            setattr(existing, attr, _clean(incoming))
+    if not existing.deadline:
+        existing.deadline = normalize_date(job.deadline)
+    if not existing.published:
+        existing.published = normalize_date(job.published)
+    if store_text:
+        description = _clean(job.descriptionSnippet)
         if description and len(description) > len(existing.description_snippet or ""):
             existing.description_snippet = description
-        for attr, incoming in (
-            ("salary", job.salary), ("job_type", job.jobType), ("industry", job.industry),
-            ("apply_url", job.applyUrl), ("location", job.location),
-        ):
-            if not getattr(existing, attr) and _clean(incoming):
-                setattr(existing, attr, _clean(incoming))
-        if not existing.deadline:
-            existing.deadline = normalize_date(job.deadline)
-        db.commit()
-        db.refresh(existing)
-        return IngestResult(existing, created=False, matched_by=matched_by)
+        if job.raw and not existing.raw_payload:
+            existing.raw_payload = json.dumps(job.raw, ensure_ascii=False)
 
+
+def _create(db: Session, job: JobIn, url: str, fp: str, now: datetime.datetime,
+            status: str, store_text: bool) -> models.Job:
     new_job = models.Job(
         title=job.title.strip(),
         company=job.company.strip(),
         location=_clean(job.location),
         published=normalize_date(job.published),
         deadline=normalize_date(job.deadline),
-        description_snippet=description,
+        description_snippet=_clean(job.descriptionSnippet) if store_text else None,
         url=url,
         source=job.source,
+        status=status,
         salary=_clean(job.salary),
         job_type=_clean(job.jobType),
         industry=_clean(job.industry),
@@ -160,9 +175,45 @@ def ingest(db: Session, job: JobIn, now: datetime.datetime | None = None) -> Ing
         fingerprint=fp,
         first_seen_at=now,
         last_seen_at=now,
-        raw_payload=json.dumps(job.raw, ensure_ascii=False) if job.raw else None,
+        raw_payload=json.dumps(job.raw, ensure_ascii=False) if store_text and job.raw else None,
     )
     db.add(new_job)
     db.commit()
     db.refresh(new_job)
-    return IngestResult(new_job, created=True)
+    return new_job
+
+
+def _store(db: Session, job: JobIn, now: datetime.datetime | None, status: str,
+           store_text: bool) -> IngestResult:
+    now = now or datetime.datetime.utcnow()
+    url, fp = _lookup_keys(job)
+    existing, matched_by = find_existing(db, url, fp, job.url)
+    if not existing:
+        try:
+            return IngestResult(_create(db, job, url, fp, now, status, store_text), created=True)
+        except IntegrityError:
+            # Two requests for the same ad raced (e.g. a tab reloaded mid-score); the other one won.
+            db.rollback()
+            existing, matched_by = find_existing(db, url, fp, job.url)
+            if not existing:
+                raise
+    _refresh(existing, job, fp, now, store_text)
+    if store_text and job.status and existing.status != "applied":
+        existing.status = job.status
+    db.commit()
+    db.refresh(existing)
+    return IngestResult(existing, created=False, matched_by=matched_by)
+
+
+def ingest(db: Session, job: JobIn, now: datetime.datetime | None = None) -> IngestResult:
+    """Full capture: stores the description and raw payload. `job.status` (a save or reject) is applied
+    to an existing row unless it is already `applied`."""
+    if job.status == "seen":
+        raise ValueError("'seen' records carry no text; use record_seen()")
+    return _store(db, job, now, status=job.status or "new", store_text=True)
+
+
+def record_seen(db: Session, job: JobIn, now: datetime.datetime | None = None) -> IngestResult:
+    """Remember that an ad was viewed, keeping metadata only: no description, no raw payload.
+    An existing row keeps its status and whatever text it already has."""
+    return _store(db, job, now, status="seen", store_text=False)

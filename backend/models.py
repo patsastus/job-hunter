@@ -25,6 +25,7 @@ class Job(Base):
     raw_payload = Column(Text, nullable=True)  # JSON of the untouched capture
     first_seen_at = Column(DateTime, nullable=True)
     last_seen_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)  # free-text, edited from the extension popup / web app
 
     # Tracking
     status = Column(String, default="new") # options: new, saved, rejected, applied

@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 import asyncio
 import json
@@ -59,6 +59,7 @@ class JobResponse(JobAd):
     status: str
     fit_score: int | None
     fit_reason: str | None
+    notes: str | None = None
 
     class Config:
         from_attributes = True
@@ -76,15 +77,18 @@ def score_new_job(job_id: int):
     db = SessionLocal()
     try:
         job = db.query(models.Job).filter(models.Job.id == job_id).first()
-        if job:
+        # A job scored on view (score-preview) already has its score; don't pay for it twice.
+        if job and job.fit_score is None:
             run_ai_scorer(job, db)
     finally:
         db.close()
 
 @app.post("/api/jobs", response_model=IngestResponse)
 def add_job(job: ingest.JobIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    if job.status == "seen":
+        raise HTTPException(status_code=422, detail="'seen' records are created by /api/score-preview")
     result = ingest.ingest(db, job)
-    if result.created:
+    if result.job.fit_score is None and result.job.status in ("new", "saved"):
         background_tasks.add_task(score_new_job, result.job.id)
     return IngestResponse(
         **JobResponse.model_validate(result.job, from_attributes=True).model_dump(),
@@ -92,20 +96,100 @@ def add_job(job: ingest.JobIn, background_tasks: BackgroundTasks, db: Session = 
         matched_by=result.matched_by,
     )
 
+class ScorePreviewResponse(BaseModel):
+    id: int
+    status: str
+    fit_score: int | None
+    fit_reason: str | None
+    cached: bool  # True when the stored score was returned without calling the LLM
+    created: bool  # True when this view created the `seen` record
+
+@app.post("/api/score-preview", response_model=ScorePreviewResponse)
+def score_preview(job: ingest.JobIn, force: bool = False, db: Session = Depends(get_db)):
+    """Score an ad that is being viewed. The text is used for scoring and then dropped: only a `seen`
+    record with metadata, score and reason is kept. A saved or applied ad keeps its status."""
+    result = ingest.record_seen(db, job)
+    row = result.job
+    cached = row.fit_score is not None and not force
+    if not cached:
+        text = (job.descriptionSnippet or row.description_snippet or "").strip()
+        if text:
+            row.fit_score, row.fit_reason = compute_fit(db, row.title, row.company, text)
+        else:
+            row.fit_score, row.fit_reason = None, "No description to score."
+        db.commit()
+        db.refresh(row)
+    return ScorePreviewResponse(id=row.id, status=row.status, fit_score=row.fit_score,
+                                fit_reason=row.fit_reason, cached=cached, created=result.created)
+
+class LookupRequest(BaseModel):
+    urls: List[str] = Field(max_length=200)
+
+class LookupItem(BaseModel):
+    url: str  # as sent, so callers can match results to the links they asked about
+    id: int | None = None
+    status: str | None = None
+    fit_score: int | None = None
+
+@app.post("/api/jobs/lookup", response_model=List[LookupItem])
+def lookup_jobs(req: LookupRequest, db: Session = Depends(get_db)):
+    """Which of these ad URLs are already known, and in what state."""
+    canon = {u: ingest.canonical_url(u) for u in req.urls}
+    wanted = set(canon.values()) | set(req.urls)
+    by_url = {j.url: j for j in db.query(models.Job).filter(models.Job.url.in_(wanted)).all()}
+    for alias in db.query(models.JobUrl).filter(models.JobUrl.url.in_(wanted)).all():
+        if alias.url not in by_url:
+            by_url[alias.url] = db.get(models.Job, alias.job_id)
+    items = []
+    for u in req.urls:
+        job = by_url.get(canon[u]) or by_url.get(u)
+        items.append(LookupItem(url=u, id=job.id, status=job.status, fit_score=job.fit_score) if job
+                     else LookupItem(url=u))
+    return items
+
 @app.get("/api/jobs", response_model=List[JobResponse])
 def get_jobs(db: Session = Depends(get_db)):
     return db.query(models.Job).order_by(models.Job.id.desc()).all()
 
 class JobUpdate(BaseModel):
-    status: str
+    """Only fields present in the request are changed. Empty text clears location, deadline and notes."""
+    status: ingest.JobStatus | None = None
+    title: str | None = None
+    company: str | None = None
+    location: str | None = None
+    deadline: str | None = None
+    notes: str | None = None
 
 @app.patch("/api/jobs/{job_id}", response_model=JobResponse)
-def update_job_status(job_id: int, job_update: JobUpdate, db: Session = Depends(get_db)):
+def update_job(job_id: int, job_update: JobUpdate, db: Session = Depends(get_db)):
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not db_job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    db_job.status = job_update.status
+
+    sent = job_update.model_fields_set
+    for field in ("title", "company"):
+        if field in sent:
+            value = (getattr(job_update, field) or "").strip()
+            if not value:
+                raise HTTPException(status_code=422, detail=f"{field} cannot be empty")
+            setattr(db_job, field, value)
+    for field in ("location", "notes"):
+        if field in sent:
+            setattr(db_job, field, (getattr(job_update, field) or "").strip() or None)
+    if "deadline" in sent:
+        raw_deadline = (job_update.deadline or "").strip()
+        parsed = ingest.normalize_date(raw_deadline)
+        if raw_deadline and not parsed:
+            raise HTTPException(status_code=422, detail="deadline must be a date like 2026-11-30 or 30.11.2026")
+        db_job.deadline = parsed
+    if "status" in sent and job_update.status is not None:
+        if job_update.status == "seen" and db_job.status != "seen":
+            if db_job.status == "applied":
+                raise HTTPException(status_code=409, detail="An applied job cannot go back to 'seen'")
+            # Back to a viewed-only record (e.g. undoing a save): drop the text that the save stored.
+            db_job.description_snippet = None
+            db_job.raw_payload = None
+        db_job.status = job_update.status
     db.commit()
     db.refresh(db_job)
     return db_job
@@ -465,6 +549,14 @@ async def score_stream(request: Request):
         }
     )
 
+@app.get("/api/jobs/{job_id}", response_model=JobResponse)
+def get_job(job_id: int, db: Session = Depends(get_db)):
+    # Declared after the static /api/jobs/score-stream route so "score-stream" isn't read as a job id.
+    db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not db_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return db_job
+
 @app.post("/api/jobs/{job_id}/score", response_model=JobResponse)
 def score_job(job_id: int, db: Session = Depends(get_db)):
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
@@ -569,37 +661,33 @@ def update_setting(setting: SettingUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
-def run_ai_scorer(job: models.Job, db: Session):
+def compute_fit(db: Session, title: str, company: str, description: str) -> tuple[int | None, str]:
+    """Ask the LLM how well the profile documents fit an ad. Returns (score, reason); score is None
+    when scoring was not possible, and the reason says why. Does not touch the database."""
     docs = db.query(models.ProfileDocument).all()
     if not docs:
-        job.fit_score = None
-        job.fit_reason = "No profile documents provided for scoring."
-        db.commit()
-        return
+        return None, "No profile documents provided for scoring."
 
     context_text = "\n\n".join([f"--- {d.title} ---\n{d.content}" for d in docs])
-    
+
     # Get settings
     provider_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "llm_provider").first()
     key_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "api_key").first()
     model_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "gemini_model").first()
-    
+
     provider = provider_setting.value if provider_setting else "gemini"
     api_key = key_setting.value if key_setting else ""
     model_name = model_setting.value if model_setting else "gemini-3.5-flash-lite"
-    
+
     if not api_key:
-        job.fit_score = None
-        job.fit_reason = f"API Key missing for {provider}."
-        db.commit()
-        return
+        return None, f"API Key missing for {provider}."
 
     prompt = f"""You are an expert technical recruiter matching a candidate to a job.
 Candidate Profile:
 {context_text}
 
-Job Ad ({job.company} - {job.title}):
-{job.description_snippet}
+Job Ad ({company} - {title}):
+{description}
 
 Evaluate the fit on a scale of 0 to 100. Be realistic and critical based on the required technologies and experience.
 Return ONLY valid JSON in this exact format:
@@ -620,13 +708,11 @@ Return ONLY valid JSON in this exact format:
             res.raise_for_status()
             text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
             result = json.loads(text)
-            job.fit_score = result.get("score")
-            job.fit_reason = result.get("reason")
-        else:
-            job.fit_score = None
-            job.fit_reason = f"Provider '{provider}' is not yet fully implemented in the backend."
+            return result.get("score"), result.get("reason")
+        return None, f"Provider '{provider}' is not yet fully implemented in the backend."
     except Exception as e:
-        job.fit_score = None
-        job.fit_reason = f"AI Error: {str(e)}"
-    
+        return None, f"AI Error: {str(e)}"
+
+def run_ai_scorer(job: models.Job, db: Session):
+    job.fit_score, job.fit_reason = compute_fit(db, job.title, job.company, job.description_snippet)
     db.commit()

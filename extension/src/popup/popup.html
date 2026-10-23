@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job Hunter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Job Hunter</h1>
+      <label class="toggle"><input type="checkbox" id="auto-score"> Score ads automatically</label>
+    </header>
+    <section id="ad" hidden>
+      <h2 id="ad-title"></h2>
+      <p id="ad-meta" class="muted"></p>
+    </section>
+    <section id="result" hidden>
+      <div id="score" class="score" hidden></div>
+      <p id="reason"></p>
+    </section>
+    <p id="message" class="muted"></p>
+    <div id="actions"></div>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

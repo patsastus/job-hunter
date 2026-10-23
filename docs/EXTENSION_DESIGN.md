@@ -128,7 +128,7 @@ extension/
 No bundler, on purpose: nothing hides what the browser loads. The background worker, popup and options
 page are ES modules. **Content scripts cannot be ES modules**, so the parsers are classic scripts that
 attach to a shared `JH` namespace and are listed in order in the manifest's `content_scripts.js` (each
-file also exports itself via `module.exports` so Node tests can load it).
+file is tested by loading it into a jsdom window the way a browser runs a content script).
 
 ## Backend additions (done, merged in `e1305e1`)
 

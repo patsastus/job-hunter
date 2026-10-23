@@ -15,8 +15,10 @@ import urllib.parse
 from datetime import datetime
 
 import ingest
+import llm
 import migrate
 import models
+import profile
 import skills_extractor
 from database import engine, SessionLocal
 
@@ -60,6 +62,7 @@ class JobResponse(JobAd):
     fit_score: int | None
     fit_reason: str | None
     notes: str | None = None
+    scored_with: str | None = None  # version stamp of the profile+prompt behind fit_score
 
     class Config:
         from_attributes = True
@@ -110,13 +113,17 @@ def score_preview(job: ingest.JobIn, force: bool = False, db: Session = Depends(
     record with metadata, score and reason is kept. A saved or applied ad keeps its status."""
     result = ingest.record_seen(db, job)
     row = result.job
-    cached = row.fit_score is not None and not force
+    ctx = profile.scoring_context(db)
+    # A stored score only counts while it was made with the current profile and prompt. Scores from before
+    # versioning (scored_with is NULL) read as stale, so they are refreshed the next time the ad is viewed.
+    fresh = row.fit_score is not None and (ctx is None or row.scored_with == ctx.version)
+    cached = fresh and not force
     if not cached:
         text = (job.descriptionSnippet or row.description_snippet or "").strip()
         if text:
-            row.fit_score, row.fit_reason = compute_fit(db, row.title, row.company, text)
+            row.fit_score, row.fit_reason, row.scored_with = compute_fit(db, row.title, row.company, text)
         else:
-            row.fit_score, row.fit_reason = None, "No description to score."
+            row.fit_score, row.fit_reason, row.scored_with = None, "No description to score.", None
         db.commit()
         db.refresh(row)
     return ScorePreviewResponse(id=row.id, status=row.status, fit_score=row.fit_score,
@@ -661,58 +668,67 @@ def update_setting(setting: SettingUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "updated"}
 
-def compute_fit(db: Session, title: str, company: str, description: str) -> tuple[int | None, str]:
-    """Ask the LLM how well the profile documents fit an ad. Returns (score, reason); score is None
-    when scoring was not possible, and the reason says why. Does not touch the database."""
-    docs = db.query(models.ProfileDocument).all()
-    if not docs:
-        return None, "No profile documents provided for scoring."
-
-    context_text = "\n\n".join([f"--- {d.title} ---\n{d.content}" for d in docs])
-
-    # Get settings
-    provider_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "llm_provider").first()
-    key_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "api_key").first()
-    model_setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == "gemini_model").first()
-
-    provider = provider_setting.value if provider_setting else "gemini"
-    api_key = key_setting.value if key_setting else ""
-    model_name = model_setting.value if model_setting else "gemini-3.5-flash-lite"
-
-    if not api_key:
-        return None, f"API Key missing for {provider}."
+def compute_fit(db: Session, title: str, company: str, description: str) -> tuple[int | None, str | None, str | None]:
+    """Ask the LLM how well the profile fits an ad. Returns (score, reason, profile_version).
+    score and version are None when scoring was not possible, and the reason says why.
+    Does not touch the database."""
+    ctx = profile.scoring_context(db)
+    if ctx is None:
+        return None, "No profile documents provided for scoring.", None
 
     prompt = f"""You are an expert technical recruiter matching a candidate to a job.
 Candidate Profile:
-{context_text}
+{ctx.text}
 
 Job Ad ({company} - {title}):
 {description}
 
 Evaluate the fit on a scale of 0 to 100. Be realistic and critical based on the required technologies and experience.
+Take any preferences or dealbreakers stated in the candidate profile into account.
 Return ONLY valid JSON in this exact format:
 {{"score": 85, "reason": "One short sentence explaining the score."}}
 """
-
-    import requests
-    import json
-
     try:
-        if provider == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"response_mime_type": "application/json"}
-            }
-            res = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=20)
-            res.raise_for_status()
-            text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-            result = json.loads(text)
-            return result.get("score"), result.get("reason")
-        return None, f"Provider '{provider}' is not yet fully implemented in the backend."
+        result = json.loads(llm.generate(llm.get_settings(db), prompt, json_mode=True, timeout=20))
+        return result.get("score"), result.get("reason"), ctx.version
+    except llm.LlmUnavailable as e:
+        return None, str(e), None
     except Exception as e:
-        return None, f"AI Error: {str(e)}"
+        return None, f"AI Error: {str(e)}", None
 
 def run_ai_scorer(job: models.Job, db: Session):
-    job.fit_score, job.fit_reason = compute_fit(db, job.title, job.company, job.description_snippet)
+    job.fit_score, job.fit_reason, job.scored_with = compute_fit(db, job.title, job.company, job.description_snippet)
     db.commit()
+
+# Distilled profile: the short, user-edited profile the scorer prefers over the raw documents
+class DistilledUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=profile.MAX_DISTILLED_CHARS)
+
+@app.get("/api/profile/distilled")
+def get_distilled_profile(db: Session = Depends(get_db)):
+    return profile.status(db)
+
+@app.post("/api/profile/distilled/draft")
+def draft_distilled_profile(db: Session = Depends(get_db)):
+    """Generate a draft from the profile documents for the user to review. Nothing is saved."""
+    try:
+        return {"content": profile.generate_draft(db)}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except llm.LlmUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI Error: {str(e)}")
+
+@app.put("/api/profile/distilled")
+def save_distilled_profile(update: DistilledUpdate, db: Session = Depends(get_db)):
+    if not update.content.strip():
+        raise HTTPException(status_code=422, detail="content cannot be blank")
+    profile.save_distilled(db, update.content)
+    return profile.status(db)
+
+@app.delete("/api/profile/distilled")
+def delete_distilled_profile(db: Session = Depends(get_db)):
+    """Go back to scoring with the raw profile documents."""
+    profile.delete_distilled(db)
+    return profile.status(db)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { SkillReviewModal } from './components/SkillReviewModal';
 
@@ -15,6 +15,14 @@ interface Job {
   status: string;
   fit_score: number | null;
   fit_reason?: string | null;
+}
+
+interface DistilledStatus {
+  exists: boolean;
+  content: string;
+  source_stale: boolean;
+  scoring_with: 'distilled' | 'raw' | null;
+  max_chars: number;
 }
 
 type SortOption = 
@@ -81,18 +89,29 @@ function App() {
   
   const [showSettings, setShowSettings] = useState(false);
 
+  // Distilled Profile State
+  const [distilled, setDistilled] = useState<DistilledStatus | null>(null);
+  const [distilledText, setDistilledText] = useState("");
+  const [distilledBusy, setDistilledBusy] = useState(false);
+  const [distilledMsg, setDistilledMsg] = useState("");
+  const distilledDirty = useRef(false); // true while the editor holds text that isn't saved yet
+
   const fetchData = async () => {
     try {
-      const [jobRes, kwRes, docRes, setRes] = await Promise.all([
+      const [jobRes, kwRes, docRes, setRes, profRes] = await Promise.all([
         fetch('/api/jobs'),
         fetch('/api/keywords'),
         fetch('/api/documents'),
-        fetch('/api/settings')
+        fetch('/api/settings'),
+        fetch('/api/profile/distilled')
       ]);
       setJobs(await jobRes.json());
       setKeywords(await kwRes.json());
       setDocuments(await docRes.json());
       setSettings(await setRes.json());
+      const profile: DistilledStatus = await profRes.json();
+      setDistilled(profile);
+      if (!distilledDirty.current) setDistilledText(profile.content); // never overwrite unsaved edits
     } catch (e) {
       console.error(e);
     }
@@ -495,6 +514,75 @@ function App() {
     }
   };
 
+  const errorText = (data: { detail?: unknown }, fallback: string) =>
+    typeof data.detail === 'string' ? data.detail : fallback;
+
+  const generateDistilledDraft = async () => {
+    if (distilledDirty.current && !window.confirm('Replace your unsaved edits with a new draft?')) return;
+    setDistilledBusy(true);
+    setDistilledMsg("");
+    try {
+      const res = await fetch('/api/profile/distilled/draft', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setDistilledMsg(errorText(data, 'Could not generate a draft.'));
+        return;
+      }
+      setDistilledText(data.content);
+      distilledDirty.current = true;
+      setDistilledMsg('Draft generated, nothing is saved yet. Review it, fill in your preferences, then save.');
+    } catch (e) {
+      console.error(e);
+      setDistilledMsg('Could not reach the backend.');
+    } finally {
+      setDistilledBusy(false);
+    }
+  };
+
+  const saveDistilled = async () => {
+    setDistilledBusy(true);
+    setDistilledMsg("");
+    try {
+      const res = await fetch('/api/profile/distilled', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: distilledText })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDistilledMsg(errorText(data, 'The profile text is empty or too long.'));
+        return;
+      }
+      distilledDirty.current = false;
+      setDistilled(data);
+      setDistilledText(data.content);
+      setDistilledMsg('Saved. Scores made with an older profile are re-scored when you next view those ads.');
+    } catch (e) {
+      console.error(e);
+      setDistilledMsg('Could not reach the backend.');
+    } finally {
+      setDistilledBusy(false);
+    }
+  };
+
+  const removeDistilled = async () => {
+    if (!window.confirm('Delete the distilled profile and score with your full documents again?')) return;
+    setDistilledBusy(true);
+    try {
+      const res = await fetch('/api/profile/distilled', { method: 'DELETE' });
+      const data: DistilledStatus = await res.json();
+      distilledDirty.current = false;
+      setDistilled(data);
+      setDistilledText("");
+      setDistilledMsg('Deleted. Scoring uses your full documents.');
+    } catch (e) {
+      console.error(e);
+      setDistilledMsg('Could not reach the backend.');
+    } finally {
+      setDistilledBusy(false);
+    }
+  };
+
   const JobCard = ({ job }: { job: Job }) => {
     const isScoring = scoringJobs.has(job.id);
     const isOpJob = job.source === 'op_kiitorata_2027' || job.url.includes('op-careers.fi');
@@ -774,6 +862,39 @@ function App() {
                 />
                 <button type="submit" className="btn save" style={{padding: '0.3rem 0.6rem', alignSelf: 'flex-start'}}>Add Document</button>
               </form>
+
+              <div style={{marginTop: '1.5rem'}}>
+                <h3>Distilled Profile (used for scoring)</h3>
+                <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>
+                  A short version of the documents above, so each score reads about 500 words instead of the whole CV.
+                  Generate a draft, then edit it and state your preferences and dealbreakers. When saved, scoring uses this
+                  instead of the full documents. Saving a change marks older scores stale; they are re-scored when you next view those ads.
+                </p>
+                <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>
+                  Scoring with: <strong>{distilled?.scoring_with === 'distilled' ? 'distilled profile' : distilled?.scoring_with === 'raw' ? 'full documents' : 'nothing (add a document first)'}</strong>
+                  {distilled?.source_stale && (
+                    <span style={{color: '#b45309'}}> — your documents changed after this was saved. Generate a new draft, or save again to keep it as is.</span>
+                  )}
+                </p>
+                <textarea
+                  value={distilledText}
+                  onChange={(e) => { distilledDirty.current = true; setDistilledText(e.target.value); }}
+                  maxLength={distilled?.max_chars}
+                  placeholder="No distilled profile yet. Use 'Generate draft' to create one from your documents."
+                  style={{padding: '0.3rem', borderRadius: '4px', border: '1px solid #dfe1e6', minHeight: '220px', width: '100%', fontFamily: 'monospace', boxSizing: 'border-box'}}
+                />
+                <div style={{display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem', flexWrap: 'wrap'}}>
+                  <button type="button" className="btn outline" disabled={distilledBusy || documents.length === 0} onClick={generateDistilledDraft} style={{padding: '0.3rem 0.6rem'}}>
+                    {distilledBusy ? 'Working...' : 'Generate draft'}
+                  </button>
+                  <button type="button" className="btn save" disabled={distilledBusy || !distilledText.trim()} onClick={saveDistilled} style={{padding: '0.3rem 0.6rem'}}>Save</button>
+                  {distilled?.exists && (
+                    <button type="button" className="btn outline" disabled={distilledBusy} onClick={removeDistilled} style={{padding: '0.3rem 0.6rem', color: 'red'}}>Delete</button>
+                  )}
+                  <span style={{fontSize: '0.8rem', color: '#5e6c84'}}>{distilledText.length} / {distilled?.max_chars ?? 6000}</span>
+                </div>
+                {distilledMsg && <p style={{fontSize: '0.85rem', marginTop: '0.5rem'}}>{distilledMsg}</p>}
+              </div>
             </div>
           </div>
         )}

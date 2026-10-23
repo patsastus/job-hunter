@@ -25,7 +25,7 @@ def llm(monkeypatch):
 
     def fake(db, title, company, description):
         calls.append({"title": title, "company": company, "description": description})
-        return 77, "Good Go match."
+        return 77, "Good Go match.", "v1"
 
     monkeypatch.setattr(main, "compute_fit", fake)
     return calls
@@ -89,7 +89,7 @@ def test_preview_never_changes_status_of_a_saved_job_or_stores_its_text(client, 
 
 
 def test_scoring_failure_keeps_the_record_and_retries_next_view(client, db, monkeypatch):
-    outcomes = iter([(None, "AI Error: boom"), (60, "ok now")])
+    outcomes = iter([(None, "AI Error: boom", None), (60, "ok now", "v1")])
     monkeypatch.setattr(main, "compute_fit", lambda *a: next(outcomes))
     first = client.post("/api/score-preview", json=ad()).json()
     assert first["fit_score"] is None and "boom" in first["fit_reason"] and first["created"] is True

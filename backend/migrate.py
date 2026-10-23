@@ -19,6 +19,7 @@ NEW_JOB_COLUMNS = {
     "first_seen_at": "DATETIME",
     "last_seen_at": "DATETIME",
     "notes": "TEXT",
+    "scored_with": "VARCHAR",
     "deadline": "VARCHAR",
 }
 

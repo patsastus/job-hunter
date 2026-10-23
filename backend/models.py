@@ -26,6 +26,7 @@ class Job(Base):
     first_seen_at = Column(DateTime, nullable=True)
     last_seen_at = Column(DateTime, nullable=True)
     notes = Column(Text, nullable=True)  # free-text, edited from the extension popup / web app
+    scored_with = Column(String, nullable=True)  # profile.py version stamp of the profile+prompt that produced fit_score
 
     # Tracking
     status = Column(String, default="new") # options: new, saved, rejected, applied
@@ -85,6 +86,15 @@ class ProfileDocument(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String)
     content = Column(Text)
+
+class DistilledProfile(Base):
+    """The short, user-edited profile used for scoring. A single row (id 1)."""
+    __tablename__ = "distilled_profile"
+
+    id = Column(Integer, primary_key=True)
+    content = Column(Text)
+    source_hash = Column(String, nullable=True)  # hash of the profile documents it was generated from
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"

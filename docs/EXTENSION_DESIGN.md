@@ -1,139 +1,160 @@
 # Capture extension: design
 
-The extension is the **only** way jobs enter the database (see "Constraints"). Everything else
-(ranking, triage, applications) reads from what it captures, so capture has to be fast, forgiving and
-hard to lose data with.
+The extension is the **only** way jobs enter the database (see "Constraints"). It does two separate
+things, and the difference matters:
+
+- **Score on view:** when you look at an ad, you get a fit score and reason immediately. Nothing about
+  the ad's text is kept.
+- **Save on demand:** when you decide an ad matters, you save it (full capture) or reject it.
+
+Everything else (ranking, triage, applications) reads from what these produce.
 
 ## Constraints
 
 - **No automated collection.** Duunitori's terms forbid scraping or systematically copying content, and
-  its `robots.txt` disallows automated access. So the extension only acts when the user asks, on the
-  page the user has open. It never opens pages, follows links, paginates or captures whole result lists.
-- **Local only.** Talks to the local backend (default `http://jobs.test`), nothing else. No analytics,
-  no remote code.
-- **Chrome and Firefox from one codebase.** Deliberately two real targets, to learn the differences.
-- **Sites:** Duunitori and LinkedIn, plus a generic fallback for any page with a `JobPosting` JSON-LD
-  block. Other sites later by adding an adapter.
+  its `robots.txt` disallows automated access. The extension therefore never makes requests to job
+  sites, never opens pages, follows links, paginates or reads result lists to harvest them. It only
+  works on the page the user has open and looking at.
+- **Text is processed, not stored, until you save.** Scoring sends the ad text to the backend and the
+  scoring LLM, then discards it. What is kept for an ad you only viewed is derived data: URL, title,
+  company, location, dates, score and reason (a `seen` record). The description and raw capture are stored
+  only when you press Save. This is a deliberate line, not a legal opinion: it keeps the tool a personal
+  reading aid rather than an archive of the site.
+- **Local only.** Talks to the local backend (default `http://jobs.test`). No analytics, no remote code.
+  (The LLM call is made by the backend, as today.)
+- **Chrome and Firefox from one codebase**, deliberately, to learn the differences.
+- **Sites:** Duunitori first. LinkedIn and a generic JSON-LD fallback are manual-capture only at first.
 
-## What "smooth" means (the acceptance bar)
-
-1. **One action saves.** Click the toolbar icon, or press a shortcut. No form first.
-2. **Under ~1 second to "saved".** The popup shows the result from local state immediately;
-   scoring happens afterwards and fills in.
-3. **Never lose a capture.** If the backend is down, the job is queued and sent later. The user is
-   told it is queued, not that it failed.
-4. **You can see you already have it.** The toolbar badge shows a tick on pages already in the DB, and
-   saving again says "Already saved (status: applied)" instead of pretending to save.
-5. **Edit after, not before.** The popup after saving lets you fix title/company, set status, add a
-   note, and undo. If the parse looks weak, it says so and offers the edit form straight away.
-6. **See the verdict in place.** The fit score and one-line reason appear in the popup a few seconds
-   after saving, so triage ("apply / skip") happens at capture time.
-
-## Flow
+## Workflow
 
 ```
-click icon / shortcut
-  -> background: inject content script into the active tab (activeTab, no broad host access)
-  -> content script: parse page -> { job, quality, raw }
-  -> background: POST /api/jobs   (queue in storage.local if unreachable)
-  -> popup: shows outcome (created | duplicate | queued) + editable card
-  -> background: poll GET /api/jobs/:id for ~15 s -> popup shows fit score + reason
+open a Duunitori ad
+  -> tab becomes active: content script parses the ad (JSON-LD, then DOM)
+  -> background: POST /api/score-preview            badge: "…" then the score, e.g. "82"
+  -> you read the ad with the score and a one-line reason in the popup
+  -> Alt+Shift+S  save   (full capture stored, status "saved")
+     Alt+Shift+X  reject (status "rejected", no text stored)
+     or just close the tab: the ad stays a "seen" record with its score
 ```
 
-The **background worker owns the network call**, not the popup, because a popup closes the moment focus
-moves and would drop the request.
+Scoring runs when the tab is **active**, not on page load, so ads opened in background tabs and never
+read cost nothing. Each ad is scored once; revisiting shows the stored result. The popup has "Re-score".
 
-### Popup states
+## Smoothness (the acceptance bar)
 
-| State | Shows |
+1. Score visible within ~5 s of looking at an ad, with no click.
+2. Save and reject are one keystroke, with feedback on the badge.
+3. **Never lose a save.** If the backend is down, a save is queued and sent later, and the badge shows
+   that it is queued. (Scoring just reports "offline"; there is nothing to queue.)
+4. You can always tell what state an ad is in: badge colour and text say scored / saved / rejected /
+   applied / offline / expired.
+5. Edit after saving: title, company, status, note, undo.
+
+### Badge (per tab)
+
+| Badge | Meaning |
 |---|---|
-| Unsupported page | "Not a job page", with a "Save anyway as bookmark" only if the user wants it (off by default) |
-| Saving | Title/company as soon as parsed, spinner for the network part |
-| Created | Card: title, company, location, deadline; status buttons; note; Undo; Open in app |
-| Duplicate | Same card with the existing row and status; "Update with this capture" |
-| Queued | "Saved locally, will sync when jobs.test is reachable" with the count of queued jobs |
-| Weak parse | Card opens in edit mode with the missing fields highlighted |
+| `…` | scoring in progress |
+| `82` (green ≥70, amber 40–69, red <40) | fit score, ad not saved |
+| `✓` | saved (score in the popup) |
+| `✗` grey | rejected |
+| `A` | applied |
+| `!` | backend unreachable |
+| `exp` | the ad is expired, so it is not scored |
 
-Keyboard shortcut (`commands` API): save without opening the popup, with feedback on the badge
-(tick, or a count if queued). Default `Alt+Shift+S`, rebindable by the user in the browser.
+### Popup
+
+Shows title, company, location, deadline, the score and reason, and Save / Reject / Re-score buttons, a
+note field and Undo. A weak parse (missing title, company or description) is shown with the missing
+fields highlighted and editable before saving. Toggles: **auto-score** (on by default), **record viewed
+ads as seen** (on by default).
 
 ## Parsing
 
-A registry of parsers tried in order; each returns fields plus a `quality` score (which of
-title / company / description / location / dates were found).
+A registry of parsers tried in order; each returns fields plus a `quality` score.
 
 1. **JSON-LD `JobPosting`** (Duunitori, many career pages). Most reliable.
 2. **Site adapters.** Duunitori DOM fills what JSON-LD misses (salary, job type, industry, apply URL).
-   LinkedIn has no JSON-LD, so it relies on the document title (`Title | Company | LinkedIn`), the header
-   line (`Location · 21 hours ago · …`), and the description block found by its "About the job" heading,
-   not by class names, which LinkedIn obfuscates.
-3. **OpenGraph/`<title>` fallback**, giving at least title and URL.
-4. **User selection:** if text is selected on the page, it becomes the description. This is the escape
-   hatch when a site changes.
+   LinkedIn has no JSON-LD (verified on a saved page), so its adapter uses the document title
+   (`Title | Company | LinkedIn`), the header line (`Location · 21 hours ago · …`) and the block under the
+   "About the job" heading, never class names.
+3. **OpenGraph / `<title>` fallback**, giving at least title and URL.
+4. **User selection:** selected text becomes the description. The escape hatch when a site changes.
 
-Rules: the parser reads the page, it does not change it. The old `content.js` clicks "See more" buttons;
-that stays out unless needed for LinkedIn, and then only inside the LinkedIn adapter.
-The full description is captured (not cut at 800 characters). The raw structured data is sent too, so
-parser bugs can be fixed later without revisiting the page.
-
-LinkedIn pages load lazily and "Save page as" snapshots lack the description, so adapters are tested on
-snapshots exported by the extension itself ("Copy debug snapshot" in the popup menu), not on saved pages.
+The parser only reads; it does not click or change the page. LinkedIn pages load lazily and "Save page
+as" snapshots lack the description, so LinkedIn adapters are tested on snapshots exported by the
+extension itself ("Copy debug snapshot" in the popup menu).
 
 ## Browser differences (the learning part)
 
 | Concern | Chrome | Firefox | Handling |
 |---|---|---|---|
-| Background | `background.service_worker` (can be killed any time) | `background.scripts` (event page) | Two manifests generated from one base; background code written as stateless event handlers either way |
-| API namespace | `chrome.*` (promises in MV3) | `browser.*` | Tiny shim `const api = globalThis.browser ?? globalThis.chrome` |
-| Extension ID | Not needed | `browser_specific_settings.gecko.id` | Only in the Firefox manifest |
-| Host access | `host_permissions` | Granted by the user at install in MV3 | Document the one extra step for Firefox |
-| Loading for dev | Load unpacked | `about:debugging` temporary add-on / `web-ext run` | Both in the README |
+| Background | `background.service_worker` (killed at any time) | `background.scripts` (event page) | Two manifests from one base; background written as stateless event handlers |
+| API namespace | `chrome.*` (promises in MV3) | `browser.*` | Tiny shim: `globalThis.browser ?? globalThis.chrome` |
+| Extension ID | Not needed | `browser_specific_settings.gecko.id` | Firefox manifest only |
+| Host access | `host_permissions` | Granted by the user at install in MV3 | Documented extra step; the content-script match is narrow (below) |
+| Dev loading | Load unpacked | `about:debugging` / `web-ext run` | Both in the README |
 
-The worker must hold no in-memory state across events: queue, settings and pending polls live in
-`storage.local` and `alarms`.
+The worker holds no in-memory state across events: save queue, settings and per-tab state live in
+`storage.local` / `storage.session`, and retries use `alarms`.
+
+### Permissions
+
+- Content script: `*://duunitori.fi/tyopaikat/tyo/*` only (ad pages), plus the list pages for
+  highlighting in a later phase.
+- Host permission for the backend (`jobs.test`).
+- `activeTab` + `scripting` for manual capture on other sites (LinkedIn, generic), so those pages are
+  only touched when you press the shortcut.
+- A content script on an `https` page cannot call `http://jobs.test` (mixed content), so every backend
+  call is relayed through the background worker.
 
 ## Layout
 
 ```
 extension/
   src/
-    background.js        # message routing, API calls, queue, polling, badge
-    capture.js           # content script entry: runs the parsers, returns the capture
+    background.js        # message routing, backend calls, save queue, badge, shortcuts
+    content/duunitori.js # runs on ad pages: parse, report to background when the tab is active
+    content/capture.js   # injected on demand for manual capture elsewhere
     parsers/             # jsonld.js  duunitori.js  linkedin.js  generic.js  index.js
     popup/               # popup.html  popup.js  popup.css
-    options/             # backend URL, shortcut hint, queue view
-    lib/                 # api.js (backend client)  queue.js  browser.js (shim)
+    options/             # backend URL, toggles, queue view, "forget viewed ads"
+    lib/                 # api.js  queue.js  browser.js (shim)
   manifest.base.json
   build.mjs              # writes dist/chrome and dist/firefox manifests, copies src
   test/                  # parser tests against exported snapshots
 ```
 
-Plain ES modules and no bundler, on purpose: nothing hides what the browser actually loads. A bundler
-or framework can be added later if the popup grows.
+Plain ES modules, no bundler, on purpose: nothing hides what the browser loads.
 
-## Backend additions this needs
+## Backend additions
 
-| Endpoint | Why |
+| Change | Why |
 |---|---|
-| `GET /api/jobs/lookup?url=` | Badge tick and "already saved" before saving |
-| `PATCH /api/jobs/:id` (title, company, location, deadline, status, notes) | Edit after saving (today only status can change) |
-| `notes` column on `jobs` | The popup note field |
-| `DELETE /api/jobs/:id` (or soft `status=discarded`) | Undo. Soft delete is safer |
-| CORS / allowed origins | Extension background fetches are exempt with host permission; the options page needs the backend URL allowed |
-
-`POST /api/jobs` already returns `outcome`, `matched_by` and `id`. The score arrives later by polling
-`GET /api/jobs/:id`, which already exists.
+| `POST /api/score-preview` (JobIn -> `{id, status, fit_score, fit_reason, cached}`) | Score on view. Scores from the supplied text, discards it, upserts a `seen` row with metadata only. If the ad already has a score, returns it without calling the LLM |
+| `seen` status | Viewed-not-decided. Excluded from the triage lists and from the batch scorer (which only takes `new`) |
+| `POST /api/jobs` gains optional `status` | Save sets `saved` on the existing `seen` row, filling description and raw capture. Never downgrades `applied` |
+| `PATCH /api/jobs/:id` extended (title, company, location, deadline, status, notes) | Edit and reject; today only status can change |
+| `notes` column | The popup note field |
+| Soft delete / discard | Undo |
+| `POST /api/jobs/lookup` (list of URLs -> status and score each) | List highlighting and the "already known" badge |
+| Skip LLM on rows that already have a score (`score_new_job`) | A saved ad that was scored on view is not scored twice |
+| Web app: hide `seen` by default, add a "Viewed" filter | Keeps triage clean |
 
 ## Out of scope for now
 
-Bulk capture, automatic capture while browsing, capturing from result lists, sync to other devices,
-auto-attaching extracted skills (a review step stays in the web app), other job sites.
+Bulk capture, capture from result lists, background crawling, sync to other devices, auto-attached
+skills (a review step stays in the web app), an on-page score panel (the badge and popup come first),
+automatic scoring on LinkedIn (single-page app; needs URL-change detection and waiting for the
+description).
 
 ## Build order
 
-1. Backend: lookup, extended PATCH, notes, soft delete (with tests).
-2. Extension skeleton: both manifests, shim, background + popup that saves a Duunitori page end to end.
-3. Parsers: JSON-LD, Duunitori adapter, generic fallback, with tests.
-4. Queue and retry, badge, shortcut.
-5. LinkedIn adapter and debug-snapshot export.
-6. Edit card, undo, score polling, options page.
+1. Backend: `score-preview`, `seen` status, lookup, extended PATCH, notes, soft delete; tests; web app
+   hides `seen`.
+2. Extension skeleton: both manifests, shim, a Duunitori ad page produces a score on the badge.
+3. Popup with Save / Reject / Re-score, shortcuts, per-tab badge states.
+4. Save queue with retry, offline state.
+5. List-page highlighting on Duunitori (saved / rejected / seen, with scores) via the lookup endpoint.
+6. Manual capture elsewhere: generic fallback, LinkedIn adapter, debug snapshot.
+7. Options page; later, the on-page panel.

@@ -93,7 +93,7 @@ extension itself ("Copy debug snapshot" in the popup menu).
 | API namespace | `chrome.*` (promises in MV3) | `browser.*` | Tiny shim: `globalThis.browser ?? globalThis.chrome` |
 | Extension ID | Not needed | `browser_specific_settings.gecko.id` | Firefox manifest only |
 | Host access | `host_permissions` | Granted by the user at install in MV3 | Documented extra step; the content-script match is narrow (below) |
-| Dev loading | Load unpacked | `about:debugging` / `web-ext run` | Both in the README |
+| Dev loading | Load unpacked | `about:debugging` (temporary add-on) | Both in the README |
 
 The worker holds no in-memory state across events: save queue, settings and per-tab state live in
 `storage.local` / `storage.session`, and retries use `alarms`.

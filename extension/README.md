@@ -79,14 +79,14 @@ the text the save stored.
 
 ```sh
 npm test       # parsers, content script, controller, backend client, popup view, build output
-npm run lint   # builds, then web-ext lint on the Firefox build
+npm run lint   # builds, then Mozilla's addons-linter on the Firefox build (exit 1 on errors)
 ```
 
 The Duunitori fixture is **synthetic** (hand-written to match the markup the parser expects). Replace it with
 real snapshots once the extension can export them.
 
 Verified so far: all unit tests (including the real `background.js` loaded against a fake browser);
-`web-ext lint` (0 errors; one notice about Firefox's upcoming `data_collection_permissions` key, deliberately
+`addons-linter` (0 errors; one warning about Firefox's `data_collection_permissions` key, deliberately
 not set); an end-to-end run of the Chrome build in a real Chrome against a stub backend (scoring, save, undo,
 reject, the popup's buttons, the offline queue and its replay, the registered shortcuts); Firefox 158 installs
 the build as a temporary add-on. **Not verified:** pressing the shortcuts and opening the real popup (headless
@@ -105,6 +105,15 @@ src/
   popup/                 popup.html/js/css  view.js (pure: decides what to show)
 manifest.base.json       shared manifest; build.mjs adds the per-browser background and Firefox ID
 ```
+
+## Dependencies
+
+Dev dependencies are `jsdom` (tests) and `addons-linter` (manifest lint). `web-ext` was dropped: its only
+use here was `lint`, and it pulls in `@devicefarmer/adbkit` → `node-forge`, which has an unpatched advisory
+(GHSA-86w9-cpqp-85rv, no fixed release exists; `npm audit` suggests downgrading web-ext to 5.1.0, which is
+wrong). `addons-linter` is the same linter without the Android tooling. Check with `npm audit`.
+To run Firefox with auto-reload during development you can use `npx web-ext run`, which is not a project
+dependency, so it never enters the lockfile.
 
 ## Debugging
 

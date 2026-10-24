@@ -6,10 +6,10 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test \"test/*.test.js\"",
-    "lint": "npm run build && web-ext lint --source-dir dist/firefox"
+    "lint": "npm run build && addons-linter dist/firefox"
   },
   "devDependencies": {
-    "jsdom": "^26.1.0",
-    "web-ext": "^8.9.0"
+    "addons-linter": "^10.14.0",
+    "jsdom": "^26.1.0"
   }
 }

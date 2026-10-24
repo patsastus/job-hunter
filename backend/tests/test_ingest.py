@@ -163,3 +163,44 @@ def test_merged_away_url_is_not_recreated(db):
     again = ingest.ingest(db, job(url="https://x.test/a", title="Completely Different Title"))
     assert not again.created and again.matched_by == "url" and again.job.id == b.id
     assert db.query(models.Job).count() == 1
+
+
+# --- unknown sites: identifying query parameters, and ads with no location ---------------------
+
+@pytest.mark.parametrize("url,expected", [
+    # the job id lives in the query: it must survive
+    ("https://careers.acme.com/jobs?gh_jid=4001234", "https://careers.acme.com/jobs?gh_jid=4001234"),
+    # tracking goes, the id stays, the order is stable, the fragment goes
+    ("https://careers.acme.com/jobs?utm_source=x&gh_jid=4001234&fbclid=zz#apply", "https://careers.acme.com/jobs?gh_jid=4001234"),
+    ("https://www.Acme.com/jobs/?b=2&a=1", "https://acme.com/jobs?a=1&b=2"),
+    ("https://acme.com/jobs?a=1&b=2", "https://acme.com/jobs?a=1&b=2"),
+    ("https://acme.com/jobs?gh_src=abc&lever-source=li&utm_campaign=q", "https://acme.com/jobs"),
+    # known sites keep their own rules
+    ("https://duunitori.fi/tyopaikat/tyo/x-1?haku=python&utm_source=a#top", "https://duunitori.fi/tyopaikat/tyo/x-1"),
+])
+def test_canonical_url_keeps_what_identifies_a_job_on_unknown_sites(url, expected):
+    assert ingest.canonical_url(url) == expected
+
+
+def test_two_openings_on_one_listing_page_stay_separate(db):
+    first = ingest.ingest(db, job(url="https://careers.acme.com/jobs?gh_jid=111", title="Data Engineer", location=None))
+    second = ingest.ingest(db, job(url="https://careers.acme.com/jobs?gh_jid=222", title="Data Engineer", location=None))
+    assert first.created and second.created and first.job.id != second.job.id
+    again = ingest.ingest(db, job(url="https://careers.acme.com/jobs?utm_source=x&gh_jid=222", title="Data Engineer", location=None))
+    assert not again.created and again.job.id == second.job.id and again.matched_by == "url"
+    assert db.query(models.Job).count() == 2
+
+
+def test_without_a_location_the_url_is_part_of_the_identity():
+    kw = dict(title="Software Engineer", company="Acme Oy", location=None)
+    assert ingest.fingerprint(**kw, url="https://acme.com/jobs/1") != ingest.fingerprint(**kw, url="https://acme.com/jobs/2")
+    assert ingest.fingerprint(**kw, url="https://acme.com/jobs/1?utm_source=x") == ingest.fingerprint(**kw, url="https://acme.com/jobs/1")
+    # with a location the URL is ignored, so reposts under a new URL still collapse
+    with_loc = dict(title="Software Engineer", company="Acme Oy", location="Helsinki")
+    assert ingest.fingerprint(**with_loc, url="https://acme.com/jobs/1") == ingest.fingerprint(**with_loc, url="https://acme.com/jobs/2")
+
+
+def test_same_title_and_company_without_location_are_two_records_not_one(db):
+    a = ingest.record_seen(db, ingest.JobIn(title="Software Engineer", company="Acme", url="https://acme.com/jobs/1"))
+    b = ingest.record_seen(db, ingest.JobIn(title="Software Engineer", company="Acme", url="https://acme.com/jobs/2"))
+    assert a.created and b.created and a.job.id != b.job.id

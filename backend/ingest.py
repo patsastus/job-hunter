@@ -51,6 +51,20 @@ class IngestResult:
     matched_by: Optional[str] = None  # "url" | "fingerprint" when created is False
 
 
+# Query parameters that only say where a visitor came from. Everything else on an unknown site may be what
+# identifies the job (e.g. Greenhouse's ?gh_jid=123), so it is kept.
+TRACKING_PARAMS = {
+    "fbclid", "gclid", "dclid", "msclkid", "yclid", "igshid", "mc_cid", "mc_eid", "_hsenc", "_hsmi",
+    "gh_src", "lever-source", "lever-origin", "trk", "trkinfo", "trackingid", "refid", "li_fat_id", "s_cid", "cmpid",
+}
+TRACKING_PREFIXES = ("utm_", "hsa_", "pk_", "mtm_")
+
+
+def _is_tracking(name: str) -> bool:
+    name = name.lower()
+    return name in TRACKING_PARAMS or name.startswith(TRACKING_PREFIXES)
+
+
 def canonical_url(url: str) -> str:
     """Strip tracking noise so the same ad always maps to the same URL."""
     parts = urllib.parse.urlsplit(url.strip())
@@ -69,7 +83,13 @@ def canonical_url(url: str) -> str:
         if job_id:
             return f"https://www.linkedin.com/jobs/view/{job_id}"
 
-    return urllib.parse.urlunsplit((parts.scheme or "https", host, path, "", ""))
+    if host.endswith("duunitori.fi"):
+        keep = ""  # an ad's identity is its path; every query string on these pages is tracking
+    else:
+        # Unknown site: keep what could identify the job, minus tracking, in a stable order.
+        pairs = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=False) if not _is_tracking(k)]
+        keep = urllib.parse.urlencode(sorted(pairs))
+    return urllib.parse.urlunsplit((parts.scheme or "https", host, path, keep, ""))
 
 
 def _norm_text(s: str | None) -> str:
@@ -78,12 +98,17 @@ def _norm_text(s: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def fingerprint(title: str, company: str, location: str | None) -> str:
-    """Identity of an ad independent of its URL, so reposts collapse into one row."""
+def fingerprint(title: str, company: str, location: str | None, url: str | None = None) -> str:
+    """Identity of an ad independent of its URL, so reposts collapse into one row.
+
+    Without a location, title and company cannot tell two openings apart (two "Software Engineer" roles at one
+    company in different cities), so the URL becomes part of the identity: such an ad only matches itself."""
     company_words = [w for w in _norm_text(company).split() if w not in COMPANY_SUFFIXES]
     first_location = _norm_text((location or "").split(",")[0])
-    key = "|".join([_norm_text(title), " ".join(company_words), first_location])
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+    parts = [_norm_text(title), " ".join(company_words), first_location]
+    if not first_location and url:
+        parts.append(canonical_url(url))
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
 
 def normalize_date(value: str | None, today: datetime.date | None = None) -> str | None:
@@ -130,7 +155,7 @@ def find_existing(db: Session, url: str, fp: str, raw_url: str | None = None) ->
 
 
 def _lookup_keys(job: JobIn) -> tuple[str, str]:
-    return canonical_url(job.url), fingerprint(job.title, job.company, job.location)
+    return canonical_url(job.url), fingerprint(job.title, job.company, job.location, job.url)
 
 
 def _refresh(existing: models.Job, job: JobIn, fp: str, now: datetime.datetime, store_text: bool) -> None:

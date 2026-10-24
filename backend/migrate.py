@@ -36,7 +36,7 @@ def migrate(engine: Engine) -> None:
 
 def _backfill(conn) -> None:
     rows = conn.execute(text(
-        "SELECT id, title, company, location, published, deadline, created_at "
+        "SELECT id, title, company, location, url, published, deadline, created_at "
         "FROM jobs WHERE fingerprint IS NULL OR first_seen_at IS NULL"
     )).fetchall()
     for row in rows:
@@ -46,7 +46,7 @@ def _backfill(conn) -> None:
             "published = :published, deadline = :deadline WHERE id = :id"
         ), {
             "id": row.id,
-            "fp": ingest.fingerprint(row.title or "", row.company or "", row.location),
+            "fp": ingest.fingerprint(row.title or "", row.company or "", row.location, row.url),
             "created": row.created_at,
             # Keep the original text when it can't be parsed, so nothing is lost.
             "published": ingest.normalize_date(row.published) or row.published,

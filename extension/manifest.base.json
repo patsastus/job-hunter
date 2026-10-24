@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Job Hunter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scores job ads as you read them against your own profile, and keeps the ones that matter in your local Job Hunter.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "activeTab", "alarms"],
   "host_permissions": ["http://jobs.test/*"],
   "content_scripts": [
     {
@@ -15,5 +15,15 @@
   "action": {
     "default_title": "Job Hunter",
     "default_popup": "popup/popup.html"
+  },
+  "commands": {
+    "save-job": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Save this job"
+    },
+    "reject-job": {
+      "suggested_key": { "default": "Alt+Shift+X" },
+      "description": "Reject this job"
+    }
   }
 }

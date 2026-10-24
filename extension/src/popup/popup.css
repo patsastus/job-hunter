@@ -24,6 +24,9 @@ h2 { margin: 0; font-size: 15px; }
 .muted { color: var(--muted); margin: 4px 0 0; }
 section { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 8px; }
 .score { display: inline-block; min-width: 3.2em; padding: 4px 10px; border-radius: 6px; color: #fff; font-size: 24px; font-weight: 700; text-align: center; }
+.banner { margin: 8px 0 0; font-weight: 600; }
+.notice { margin: 8px 0 0; color: #c62828; }
+@media (prefers-color-scheme: dark) { .notice { color: #ff8f8f; } }
 #reason { margin: 8px 0 0; }
-#actions { margin-top: 12px; display: flex; gap: 8px; }
+#actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }

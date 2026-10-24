@@ -108,11 +108,16 @@ class ScorePreviewResponse(BaseModel):
     created: bool  # True when this view created the `seen` record
 
 @app.post("/api/score-preview", response_model=ScorePreviewResponse)
-def score_preview(job: ingest.JobIn, force: bool = False, db: Session = Depends(get_db)):
+def score_preview(job: ingest.JobIn, force: bool = False, score: bool = True, db: Session = Depends(get_db)):
     """Score an ad that is being viewed. The text is used for scoring and then dropped: only a `seen`
-    record with metadata, score and reason is kept. A saved or applied ad keeps its status."""
+    record with metadata, score and reason is kept. A saved or applied ad keeps its status.
+    `score=false` only records the ad as seen, without calling the LLM (used to reject an ad that
+    has not been scored yet)."""
     result = ingest.record_seen(db, job)
     row = result.job
+    if not score:
+        return ScorePreviewResponse(id=row.id, status=row.status, fit_score=row.fit_score,
+                                    fit_reason=row.fit_reason, cached=False, created=result.created)
     ctx = profile.scoring_context(db)
     # A stored score only counts while it was made with the current profile and prompt. Scores from before
     # versioning (scored_with is NULL) read as stale, so they are refreshed the next time the ad is viewed.

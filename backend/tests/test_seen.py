@@ -251,3 +251,21 @@ def test_batch_scorer_ignores_seen_rows(db, monkeypatch):
     monkeypatch.setattr(main.time, "sleep", lambda s: None)
     main.background_batch_scorer()
     assert scored == [new.id]
+
+
+def test_preview_can_record_without_scoring(client, db, llm):
+    r = client.post("/api/score-preview?score=false", json=ad())
+    assert r.status_code == 200
+    assert r.json()["status"] == "seen" and r.json()["created"] is True and r.json()["fit_score"] is None
+    assert llm == []  # no LLM call
+    job = db.query(models.Job).one()
+    assert job.description_snippet is None and job.raw_payload is None  # still a text-less seen record
+    # A later normal view scores it as usual.
+    assert client.post("/api/score-preview", json=ad()).json()["fit_score"] == 77 and len(llm) == 1
+
+
+def test_record_only_returns_an_existing_score_and_never_changes_status(client, db, llm):
+    saved = client.post("/api/jobs", json=ad(status="saved")).json()
+    client.post("/api/score-preview", json=ad())  # scores it
+    r = client.post("/api/score-preview?score=false", json=ad()).json()
+    assert r["id"] == saved["id"] and r["status"] == "saved" and r["fit_score"] == 77

@@ -2,17 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { badgeFor } from '../src/lib/badge.js';
 import { BackendError, createBackend } from '../src/lib/api.js';
-import { createController, createStore } from '../src/lib/controller.js';
+import { createController } from '../src/lib/controller.js';
 import { createSettings, DEFAULT_SETTINGS } from '../src/lib/settings.js';
 import { viewFor } from '../src/popup/view.js';
-
-const URL1 = 'https://duunitori.fi/tyopaikat/tyo/backend-1';
-const capture = ({ missing = [], expired = false, url = URL1 } = {}) => ({
-  job: { title: 'Backend Developer', company: 'Acme Oy', location: 'Helsinki', url, descriptionSnippet: 'We build things.' },
-  quality: { missing },
-  expired,
-});
-const preview = (over = {}) => ({ id: 1, status: 'seen', fit_score: 82, fit_reason: 'Good Go match.', cached: false, created: true, ...over });
+import { capture, fakeBackend, preview, setup, URL1 } from './fakes.js';
 
 // --- badge ------------------------------------------------------------------------------------
 
@@ -84,32 +77,12 @@ test('backend errors are classified as offline, timeout or http', async () => {
 
 // --- controller -------------------------------------------------------------------------------
 
-function setup({ settings = {}, backend } = {}) {
-  const badges = []; // [tabId, text] in call order
-  const data = new Map();
-  const api = {
-    action: {
-      setBadgeText: async ({ tabId, text }) => { badges.push([tabId, text]); },
-      setBadgeBackgroundColor: async () => {},
-    },
-  };
-  const calls = [];
-  const fakeBackend = backend || { scorePreview: async (job, opts) => { calls.push({ job, opts }); return preview(); } };
-  const store = createStore({
-    get: async (key) => (data.has(key) ? { [key]: data.get(key) } : {}),
-    set: async (obj) => Object.entries(obj).forEach(([k, v]) => data.set(k, v)),
-    remove: async (key) => { data.delete(key); },
-  });
-  const controller = createController({ api, backend: fakeBackend, store, getSettings: async () => ({ ...DEFAULT_SETTINGS, ...settings }) });
-  return { controller, badges, calls, data };
-}
-
 test('a viewed ad is scored: badge goes … then the score, and the state is kept for the popup', async () => {
   const { controller, badges, calls } = setup();
   await controller.onAdViewed(7, capture());
   assert.deepEqual(badges, [[7, '…'], [7, '82']]);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { job: capture().job, opts: { force: false } });
+  assert.deepEqual(calls[0], ['scorePreview', capture().job, { force: false }]);
   const state = await controller.getState(7, URL1);
   assert.equal(state.status, 'scored');
   assert.equal(state.preview.fit_score, 82);
@@ -143,7 +116,7 @@ test('a short description alone does not stop scoring', async () => {
 
 test('backend failures show as ! with the reason; the ad is kept so it can be retried', async () => {
   let fail = new BackendError('offline', 'Cannot reach the backend at http://jobs.test.');
-  const { controller, badges } = setup({ backend: { scorePreview: async () => { if (fail) throw fail; return preview(); } } });
+  const { controller, badges } = setup({ backend: fakeBackend({ scorePreview: async () => { if (fail) throw fail; return preview(); } }) });
   await controller.onAdViewed(1, capture());
   let state = await controller.getState(1, URL1);
   assert.equal(state.status, 'offline');
@@ -162,7 +135,7 @@ test('rescore passes force through, and does nothing for a tab with no ad', asyn
   assert.deepEqual(await controller.rescore(99, { force: true }), { ok: false });
   await controller.onAdViewed(1, capture());
   await controller.rescore(1, { force: true });
-  assert.deepEqual(calls.map((c) => c.opts.force), [false, true]);
+  assert.deepEqual(calls.map((c) => c[2].force), [false, true]);
 });
 
 test('state is only returned for the page the tab is on now', async () => {
@@ -174,16 +147,16 @@ test('state is only returned for the page the tab is on now', async () => {
 });
 
 test('closing a tab drops its state, including the ad text', async () => {
-  const { controller, data } = setup();
+  const { controller, session } = setup();
   await controller.onAdViewed(5, capture());
-  assert.ok(data.has('tab:5'));
+  assert.ok(session.has('tab:5'));
   await controller.onTabRemoved(5);
-  assert.equal(data.has('tab:5'), false);
+  assert.equal(session.has('tab:5'), false);
 });
 
 test('a slow answer for an earlier ad cannot overwrite the current one', async () => {
   const gates = [];
-  const backend = { scorePreview: (job) => new Promise((resolve) => gates.push(() => resolve(preview({ fit_score: job.url.endsWith('-1') ? 10 : 90 })))) };
+  const backend = fakeBackend({ scorePreview: (job) => new Promise((resolve) => gates.push(() => resolve(preview({ fit_score: job.url.endsWith('-1') ? 10 : 90 })))) });
   const { controller } = setup({ backend });
   const first = controller.onAdViewed(1, capture({ url: 'https://duunitori.fi/tyopaikat/tyo/ad-1' }));
   await new Promise((r) => setTimeout(r, 0));
@@ -199,8 +172,9 @@ test('a slow answer for an earlier ad cannot overwrite the current one', async (
 
 test('a tab closed mid-update does not break the controller', async () => {
   const closed = createController({
-    api: { action: { setBadgeText: async () => { throw new Error('No tab with id'); }, setBadgeBackgroundColor: async () => {} } },
-    backend: { scorePreview: async () => preview() },
+    api: { action: { setBadgeText: async () => { throw new Error('No tab with id'); }, setBadgeBackgroundColor: async () => {} }, alarms: { clear: async () => {} } },
+    backend: fakeBackend(),
+    queue: { all: async () => [], size: async () => 0 },
     store: { get: async () => undefined, set: async () => {}, remove: async () => {} },
     getSettings: async () => DEFAULT_SETTINGS,
   });
@@ -210,7 +184,7 @@ test('a tab closed mid-update does not break the controller', async () => {
 // --- popup view -------------------------------------------------------------------------------
 
 test('popup view per state', () => {
-  const state = (status, extra = {}) => ({ status, url: URL1, capture: capture({ missing: ['title', 'descriptionSnippet'] }), ...extra });
+  const state = (status, extra = {}) => ({ status, url: URL1, capture: capture(), ...extra });
   assert.equal(viewFor(null, 'https://example.com/').kind, 'not-ad');
   assert.equal(viewFor(null, URL1).kind, 'waiting');
   assert.equal(viewFor(null, URL1 + '?utm=x#top').kind, 'waiting');
@@ -219,19 +193,19 @@ test('popup view per state', () => {
   assert.equal(scored.score, 82);
   assert.equal(scored.reason, 'Good Go match.');
   assert.equal(scored.heading.company, 'Acme Oy');
-  assert.deepEqual(scored.actions.map((a) => a.id), ['rescore']);
+  assert.deepEqual(scored.actions.map((a) => a.id), ['save', 'reject', 'rescore']);
 
   const noScore = viewFor(state('scored', { preview: preview({ fit_score: null, fit_reason: 'API Key missing for gemini.' }) }), URL1);
   assert.equal(noScore.score, undefined);
   assert.equal(noScore.message, 'API Key missing for gemini.');
 
-  assert.equal(viewFor(state('scored', { preview: preview({ status: 'saved' }) }), URL1).status, 'saved');
+  assert.equal(viewFor(state('scored', { preview: preview({ status: 'saved' }) }), URL1).banner, 'Already saved');
   assert.match(viewFor(state('scoring'), URL1).message, /Scoring/);
   assert.match(viewFor(state('expired'), URL1).message, /expired/);
-  assert.match(viewFor(state('incomplete'), URL1).message, /missing: title, description/);
+  assert.match(viewFor(state('incomplete', { capture: capture({ missing: ['title', 'descriptionSnippet'] }) }), URL1).message, /missing: title, description/);
   assert.match(viewFor(state('offline', { error: 'Cannot reach the backend.' }), URL1).message, /Is the backend running/);
   assert.equal(viewFor(state('error', { error: 'bad' }), URL1).message, 'bad');
-  assert.deepEqual(viewFor(state('idle'), URL1).actions.map((a) => a.id), ['score-now']);
+  assert.deepEqual(viewFor(state('idle'), URL1).actions.map((a) => a.id), ['score-now', 'save', 'reject']);
 });
 
 // --- settings ---------------------------------------------------------------------------------

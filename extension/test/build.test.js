@@ -16,9 +16,11 @@ test('the two manifests differ only where the browsers differ', async () => {
   assert.deepEqual(strip(chrome), strip(firefox));
 });
 
-test('permissions stay minimal: storage, plus the backend and Duunitori ad pages', async () => {
+test('permissions stay minimal: what each feature needs, the backend, and Duunitori ad pages', async () => {
   const m = await buildManifest('chrome');
-  assert.deepEqual(m.permissions, ['storage']);
+  // storage: settings, tab state, queue. activeTab: the tab URL when you open the popup or press a shortcut.
+  // alarms: retry queued decisions.
+  assert.deepEqual(m.permissions, ['storage', 'activeTab', 'alarms']);
   assert.deepEqual(m.host_permissions, ['http://jobs.test/*']);
   for (const cs of m.content_scripts) for (const pattern of cs.matches) assert.match(pattern, /duunitori\.fi\/tyopaikat\/tyo\/\*$/);
 });
@@ -35,4 +37,13 @@ test('build writes both targets and every file the manifest names exists', async
     const popup = readFileSync(join(dir, manifest.action.default_popup), 'utf8');
     for (const ref of popup.matchAll(/(?:src|href)="([^"]+)"/g)) assert.ok(existsSync(join(dir, 'popup', ref[1])), `${target}: popup references ${ref[1]}`);
   }
+});
+
+test('both shortcuts are declared, and the names match what the background worker handles', async () => {
+  const m = await buildManifest('firefox');
+  assert.deepEqual(Object.keys(m.commands), ['save-job', 'reject-job']);
+  assert.equal(m.commands['save-job'].suggested_key.default, 'Alt+Shift+S');
+  assert.equal(m.commands['reject-job'].suggested_key.default, 'Alt+Shift+X');
+  const background = readFileSync(new URL('../src/background.js', import.meta.url), 'utf8');
+  for (const name of Object.keys(m.commands)) assert.ok(background.includes(`'${name}'`), `${name} is not handled in background.js`);
 });

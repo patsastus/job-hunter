@@ -15,7 +15,10 @@ export function badgeFor(state) {
   if (!state) return { text: '', color: GREY };
   switch (state.status) {
     case 'scoring':
+    case 'saving':
       return { text: '…', color: GREY };
+    case 'queued':
+      return { text: '↻', color: AMBER }; // decided, waiting for the backend
     case 'expired':
       return { text: 'exp', color: GREY };
     case 'incomplete':

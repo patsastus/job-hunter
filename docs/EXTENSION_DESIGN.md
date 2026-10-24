@@ -153,9 +153,9 @@ description).
 ## Build order
 
 1. ~~Backend: `score-preview`, `seen` status, lookup, extended PATCH, notes; tests.~~ Done.
-2. Extension skeleton: both manifests, shim, a Duunitori ad page produces a score on the badge.
-3. Popup with Save / Reject / Re-score, shortcuts, per-tab badge states.
-4. Save queue with retry, offline state.
+2. ~~Extension skeleton: both manifests, shim, a Duunitori ad page produces a score on the badge.~~ Done.
+3. ~~Popup with Save / Reject / Re-score, shortcuts, per-tab badge states.~~ Done (plus Undo).
+4. ~~Save queue with retry, offline state.~~ Done (alarm every minute, after any successful request, at startup).
 5. List-page highlighting on Duunitori (saved / rejected / seen, with scores) via the lookup endpoint.
 6. Manual capture elsewhere: generic fallback, LinkedIn adapter, debug snapshot.
 7. Options page; later, the on-page panel.

@@ -49,5 +49,14 @@ export function createBackend({ getBaseUrl, fetchFn = (...args) => fetch(...args
     // Score an ad being viewed. The backend uses the text and drops it; it keeps a text-less `seen` record.
     scorePreview: (job, { force = false } = {}) =>
       request(`/api/score-preview${force ? '?force=true' : ''}`, json('POST', job)),
+
+    // Record an ad as seen without scoring it (needed to reject an ad that has no score yet).
+    recordSeen: (job) => request('/api/score-preview?score=false', json('POST', job)),
+
+    // Save: the full capture, which is the only time the ad text is stored.
+    save: (job) => request('/api/jobs', json('POST', { ...job, status: 'saved' })),
+
+    // Reject, or undo (status "seen" drops the text a save stored).
+    setStatus: (id, status) => request(`/api/jobs/${id}`, json('PATCH', { status })),
   };
 }

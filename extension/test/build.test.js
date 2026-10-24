@@ -12,7 +12,7 @@ test('the two manifests differ only where the browsers differ', async () => {
   assert.deepEqual(firefox.background, { scripts: ['background.js'], type: 'module' });
   assert.equal(chrome.browser_specific_settings, undefined);
   assert.equal(firefox.browser_specific_settings.gecko.id, 'job-hunter@nraatika.local');
-  const strip = ({ background, browser_specific_settings, content_security_policy, ...rest }) => rest;
+  const strip = ({ background, browser_specific_settings, content_security_policy, action, ...rest }) => rest;
   assert.deepEqual(strip(chrome), strip(firefox));
 });
 
@@ -62,4 +62,16 @@ test("Firefox's extension pages must not upgrade http:// requests (the backend i
   // Chrome's default policy has no such directive, so the Chrome build states none.
   assert.equal((await buildManifest('chrome')).content_security_policy, undefined);
   assert.match((await import('node:fs')).readFileSync(new URL('../build.mjs', import.meta.url), 'utf8'), /upgrade-insecure-requests/, 'the reason is documented next to the setting');
+});
+
+test('Firefox asks for a toolbar button (not the puzzle-piece menu); Chrome gets no Firefox-only key', async () => {
+  const firefox = await buildManifest('firefox');
+  const chrome = await buildManifest('chrome');
+  assert.equal(firefox.action.default_area, 'navbar');
+  assert.equal(chrome.action.default_area, undefined);
+  // The per-browser part must add to the action, not replace it.
+  for (const m of [firefox, chrome]) {
+    assert.equal(m.action.default_popup, 'popup/popup.html');
+    assert.equal(m.action.default_title, 'Job Hunter');
+  }
 });

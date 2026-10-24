@@ -20,12 +20,18 @@ export const TARGETS = {
     // handshake it cannot complete and fails with an opaque "NetworkError". Stating the policy explicitly, without that
     // directive, restores plain-http requests. Chrome's default has no such directive, so it needs nothing.
     content_security_policy: { extension_pages: "script-src 'self'; object-src 'self';" },
+    // Firefox puts a new extension's button in the puzzle-piece menu unless it asks for the toolbar. Firefox-only
+    // key (Chrome would warn about it); it only decides the default for a fresh install, so a button the user has
+    // already moved or unpinned stays where they put it.
+    action: { default_area: 'navbar' },
   },
 };
 
 export async function buildManifest(target) {
   const base = JSON.parse(await readFile(join(root, 'manifest.base.json'), 'utf8'));
-  return { ...base, ...TARGETS[target] };
+  const { action, ...overrides } = TARGETS[target];
+  // `action` is merged key by key so the per-browser part adds to the popup settings instead of replacing them.
+  return { ...base, ...overrides, action: { ...base.action, ...action } };
 }
 
 export async function build(outRoot = join(root, 'dist')) {

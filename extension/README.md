@@ -45,6 +45,15 @@ Open a Duunitori ad (`duunitori.fi/tyopaikat/tyo/<ad>`) in a tab you are looking
 The popup shows the ad, score and reason, a banner ("Saved", "Already rejected"), Save / Reject / Undo
 buttons, "Score again" (re-scores, bypassing the cache) and a switch for automatic scoring.
 
+## Toolbar button
+
+Chrome shows the button once you pin it. Firefox keeps new extensions in its puzzle-piece menu, so the Firefox build
+asks for the toolbar itself (`"default_area": "navbar"`, Firefox-only, set in `build.mjs`). It only decides where a
+*fresh install* starts: if the button was already moved into the menu, or you unpinned it, Firefox keeps your choice.
+To pin it by hand: puzzle-piece button → the **⋯** next to Job Hunter → **Pin to Toolbar**. Placement was checked by
+installing the build in a clean Firefox profile and reading the toolbar layout Firefox saved (`unified-extensions-area`
+before, `nav-bar` after).
+
 ## When the popup can't read or score the ad
 
 The popup never asks you to reload (that would close it). If it opens on a Duunitori ad the extension has not

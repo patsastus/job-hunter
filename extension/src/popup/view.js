@@ -1,7 +1,9 @@
 // Decides what the popup shows. Pure: the DOM code in popup.js only renders the result.
 import { scoreColor } from '../lib/badge.js';
 
-export const AD_URL = /^https?:\/\/(www\.)?duunitori\.fi\/tyopaikat\/tyo\/[^/?#]+\/?(?:[?#].*)?$/;
+import { AD_URL, readerFor, WHY } from '../lib/sites.js';
+
+export { AD_URL };
 
 const FIELD_LABELS = {
   title: 'title',
@@ -54,19 +56,56 @@ export function readReply(reply) {
   return { state: reply || null, failure: null };
 }
 
-// `gaveUp` is set by the popup after it has asked the page to be read (scan-tab) and waited without an answer.
-export function viewFor(state, tabUrl, { gaveUp = false } = {}) {
+const GAVE_UP_GENERIC =
+  'Nothing came back from the page. Browser pages and some sites cannot be read by extensions; ' +
+  'if this is a normal page, try again.';
+const UNKNOWN_SITE =
+  'Job Hunter does not know this site. If the page is a job ad, it can be read once. ' +
+  'If the page is cluttered, select the ad text first.';
+const FIELD_NAMES = { title: 'title', company: 'company', descriptionSnippet: 'description' };
+
+// Things the reader was unsure about, in plain words.
+function hintsFor(state) {
+  const q = state.capture.quality;
+  const hints = [];
+  if (q.confidence === 'low') hints.push('This page does not look much like a job ad.');
+  if (q.ambiguous) hints.push('This page lists several jobs. Check this is the right one.');
+  const guessed = (q.guessed || []).map((f) => FIELD_NAMES[f] || f);
+  if (guessed.length) hints.push(`Guessed from the page, not stated by it: ${guessed.join(', ')}. Check before saving.`);
+  return hints;
+}
+
+// The title/company form: shown while either is a guess or missing, until a decision has been made.
+function editFor(state) {
+  if (state.decision) return null;
+  const q = state.capture.quality;
+  const unsure = (f) => (q.guessed || []).includes(f) || q.missing.includes(f);
+  if (!unsure('title') && !unsure('company')) return null;
+  return { title: state.capture.job.title || '', company: state.capture.job.company || '' };
+}
+
+// `reading` is set once the popup has asked for the page to be read; `gaveUp` once that has waited without an answer.
+export function viewFor(state, tabUrl, { gaveUp = false, reading = false } = {}) {
   if (!state) {
-    if (!AD_URL.test(tabUrl || '')) return { kind: 'not-ad', message: 'Open a Duunitori job ad to see how well it fits you.' };
-    return gaveUp
-      ? { kind: 'waiting', message: GAVE_UP, actions: [{ id: 'scan-tab', label: 'Try again' }] }
-      : { kind: 'waiting', message: 'Reading the ad…', actions: [] };
+    const reader = readerFor(tabUrl || '');
+    if (reader.kind === 'duunitori') {
+      return gaveUp
+        ? { kind: 'waiting', message: GAVE_UP, actions: [{ id: 'scan-tab', label: 'Try again' }] }
+        : { kind: 'waiting', message: 'Reading the ad…', actions: [] };
+    }
+    if (!reader.kind) return { kind: 'not-ad', message: WHY[reader.why] || 'This page cannot be read.' };
+    if (reading) {
+      return gaveUp
+        ? { kind: 'waiting', message: GAVE_UP_GENERIC, actions: [{ id: 'scan-tab', label: 'Try again' }] }
+        : { kind: 'waiting', message: 'Reading the page…', actions: [] };
+    }
+    return { kind: 'unknown-page', message: UNKNOWN_SITE, actions: [{ id: 'scan-tab', label: 'Read this page' }] };
   }
   if (state.status === 'unreadable') {
     const reason = /^Could not/.test(state.error) ? state.error : `Could not read this ad: ${state.error}`;
     return { kind: 'unreadable', message: reason, actions: [{ id: 'scan-tab', label: 'Try again' }], notice: '' };
   }
-  const view = { kind: state.status, heading: headingOf(state), actions: [], notice: state.notice || '' };
+  const view = { kind: state.status, heading: headingOf(state), actions: [], notice: state.notice || '', hints: hintsFor(state), edit: editFor(state) };
   switch (state.status) {
     case 'scoring':
       view.message = 'Scoring…';
@@ -105,6 +144,9 @@ export function viewFor(state, tabUrl, { gaveUp = false } = {}) {
     case 'incomplete': {
       const missing = state.capture.quality.missing.map((f) => FIELD_LABELS[f] || f);
       view.message = `The ad could not be read completely (missing: ${missing.join(', ')}).`;
+      if (state.capture.quality.missing.some((f) => f === 'descriptionSnippet' || f === 'fullDescription')) {
+        view.hints.push('Select the ad text on the page and read it again.');
+      }
       view.actions.push(...decisionActions(state));
       break;
     }
@@ -117,8 +159,10 @@ export function viewFor(state, tabUrl, { gaveUp = false } = {}) {
       view.actions.push(...decisionActions(state), { id: 'rescore', label: 'Try again' });
       break;
     case 'idle':
-      view.message = 'Auto-scoring is off.';
-      view.actions.push({ id: 'score-now', label: 'Score this ad' }, ...decisionActions(state));
+      view.message = state.why === 'low-confidence'
+        ? 'This page does not look much like a job ad, so it was not scored.'
+        : 'Auto-scoring is off.';
+      view.actions.push({ id: 'score-now', label: state.why === 'low-confidence' ? 'Score anyway' : 'Score this ad' }, ...decisionActions(state));
       break;
   }
   return view;

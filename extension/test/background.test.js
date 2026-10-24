@@ -127,3 +127,20 @@ test('a handler that throws is reported as a failure, which the popup can tell a
   assert.equal(typeof reply.failure, 'string');
   assert.equal('error' in reply, false, 'states such as "offline" use `error`; the failure envelope must not');
 });
+
+test('the save shortcut on a tab with nothing read yet reads it with the reader for that address, instead of saving blind', async () => {
+  const run = async (tab) => {
+    activeTabs = [tab];
+    const before = injected.length;
+    const requestsBefore = requests.length;
+    await listeners.command[0]('save-job');
+    return { files: injected.slice(before).map((i) => [i.target.tabId, i.files]), requests: requests.length - requestsBefore };
+  };
+  const generic = await run({ id: 21, url: 'https://careers.northwind.example/jobs/101' });
+  assert.deepEqual(generic.files, [[21, ['parsers/jsonld.js', 'parsers/generic.js', 'content/generic.js']]]);
+  assert.equal(generic.requests, 0, 'no save request: the first press only reads');
+  const ad = await run({ id: 22, url: 'https://duunitori.fi/tyopaikat/tyo/dev-1' });
+  assert.deepEqual(ad.files, [[22, ['parsers/jsonld.js', 'parsers/duunitori.js', 'content/duunitori.js']]]);
+  const blank = await run({ id: 23, url: 'about:blank' });
+  assert.deepEqual(blank.files, [], 'nothing is injected into pages that cannot be read');
+});

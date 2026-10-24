@@ -31,6 +31,15 @@ function render(view) {
     $('reason').textContent = view.reason || '';
   }
 
+  const hints = $('hints');
+  hints.replaceChildren(...(view.hints || []).map((text) => Object.assign(document.createElement('li'), { textContent: text })));
+
+  $('edit').hidden = !view.edit;
+  if (view.edit && document.activeElement !== $('edit-title') && document.activeElement !== $('edit-company')) {
+    $('edit-title').value = view.edit.title;
+    $('edit-company').value = view.edit.company;
+  }
+
   $('message').textContent = view.message || '';
   $('notice').textContent = view.notice || '';
   const actions = $('actions');
@@ -45,9 +54,11 @@ function render(view) {
       const tab = await activeTab();
       if (action.id === 'scan-tab') {
         scanned = true; // this click is the scan
+        reading = true;
         waits = 0;
       }
-      await api.runtime.sendMessage({ type: action.id, tabId: tab.id });
+      // The address lets the background pick the right reader for the page.
+      await api.runtime.sendMessage({ type: action.id, tabId: tab.id, url: tab.url });
       polls = 0;
       refresh();
     });
@@ -62,6 +73,7 @@ async function activeTab() {
 
 let polls = 0;
 let scanned = false; // asked the page to be read, once per popup
+let reading = false; // the user asked for an unknown page to be read
 let waits = 0;
 const WAIT_POLLS = 8; // about 6 s for the page to answer before saying so
 
@@ -78,16 +90,17 @@ async function refresh() {
     return;
   }
   const { state } = reply;
+  const awaiting = !state && (reading || AD_URL.test(tab.url || ''));
 
   // On an ad the extension has not read (opened before it was installed, or the browser did not run its
   // scripts): read it now instead of asking for a reload, which would close this popup.
-  if (!state && AD_URL.test(tab.url || '')) {
+  if (awaiting) {
     if (!scanned) {
       scanned = true;
-      api.runtime.sendMessage({ type: 'scan-tab', tabId: tab.id }).catch(() => {});
+      api.runtime.sendMessage({ type: 'scan-tab', tabId: tab.id, url: tab.url }).catch(() => {});
     }
     const gaveUp = ++waits > WAIT_POLLS;
-    render(viewFor(null, tab.url, { gaveUp }));
+    render(viewFor(null, tab.url, { gaveUp, reading }));
     if (!gaveUp) setTimeout(refresh, 750);
     return;
   }
@@ -116,6 +129,14 @@ async function offerAccess() {
     }
   });
 }
+
+$('edit').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const tab = await activeTab();
+  await api.runtime.sendMessage({ type: 'edit', tabId: tab.id, fields: { title: $('edit-title').value, company: $('edit-company').value } });
+  polls = 0;
+  refresh();
+});
 
 async function init() {
   try {

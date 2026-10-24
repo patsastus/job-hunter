@@ -3,7 +3,7 @@
 Scores a Duunitori job ad against your profile as you read it, and shows the result on the toolbar badge
 and in the popup. Design and constraints: [`docs/EXTENSION_DESIGN.md`](../docs/EXTENSION_DESIGN.md).
 
-**Status: build steps 2 to 4.** Viewing an ad scores it; you can save it, reject it or undo, with keyboard
+**Status: build steps 2 to 4, plus a generic reader for other sites.** Viewing an ad scores it; you can save it, reject it or undo, with keyboard
 shortcuts, and decisions made while the backend is down are queued and sent later. List highlighting, LinkedIn,
 a note field and the options page are not built yet.
 
@@ -44,6 +44,31 @@ Open a Duunitori ad (`duunitori.fi/tyopaikat/tyo/<ad>`) in a tab you are looking
 
 The popup shows the ad, score and reason, a banner ("Saved", "Already rejected"), Save / Reject / Undo
 buttons, "Score again" (re-scores, bypassing the cache) and a switch for automatic scoring.
+
+## Other sites (the generic reader)
+
+On a page the extension has no dedicated reader for, the popup says so and offers **Read this page**. Nothing is read
+until you press it (or press the save/reject shortcut on a page that has not been read yet, which reads and scores it
+instead of saving blind; a second press decides). It reads that one page, using only the access the popup click grants.
+
+What it reads, in order of trust: the schema.org `JobPosting` data most careers pages and applicant-tracking systems
+embed (title, company, location, remote, salary, dates, employment type, description), then the page's own markup and
+site name, then any text you selected (a selection of 200+ characters becomes the description, which is the way to rescue
+a cluttered page). Company names on shared job boards come from the address (`boards.greenhouse.io/northwind/…` is
+Northwind, not Greenhouse).
+
+It is honest about doubt:
+
+- **Guessed fields are stated** ("Guessed from the page, not stated by it: title, company") and a small form lets you
+  correct the title and company. A correction also updates the stored record.
+- **A page that does not look like a job ad is not scored automatically** (no structured data and few job-ad words): the
+  popup says so and offers **Score anyway**. Otherwise every stray page you read would cost an LLM call and leave a record.
+- A page listing several jobs picks the one for this address, or says it could not tell.
+- Descriptions are capped at 12,000 characters, so a long page is not sent whole.
+
+Known limits: LinkedIn pages have no structured data and heavy markup, so the generic read will be rough there (a
+dedicated adapter is planned); pages that load their text lazily may yield little until the text is on screen (select it,
+then read); the test pages are synthetic, so how well it does on the sites you really use is the open question.
 
 ## Toolbar button
 
@@ -102,7 +127,7 @@ the text the save stored.
 | `storage` | settings, per-tab state (session, in memory), the offline queue |
 | `activeTab` | the browsers only give an extension the current tab's URL after you open its popup or press its shortcut; the popup uses it to tell whether you are on an ad |
 | `alarms` | retry the offline queue |
-| `scripting` | read the ad in the open tab when you open the popup, if the browser has not already (no reload needed) |
+| `scripting` | read the ad in the open tab when you open the popup or ask for a page to be read (no reload needed); the same access serves unknown sites on request |
 | `http://jobs.test/*` | talk to your local backend |
 | content script on `duunitori.fi/tyopaikat/tyo/*` | read the ad you are looking at |
 

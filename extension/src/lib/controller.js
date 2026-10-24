@@ -5,6 +5,7 @@
 // and is removed when the tab closes. Only a save writes ad text anywhere durable (the backend, or the
 // offline queue until it can be sent).
 import { badgeFor } from './badge.js';
+import { DUUNITORI_FILES, readerFor, WHY } from './sites.js';
 
 // Without these there is nothing to score. The popup says what is missing.
 const NEEDED_TO_SCORE = ['title', 'company', 'descriptionSnippet'];
@@ -13,7 +14,7 @@ const NEEDED_TO_DECIDE = ['title', 'company'];
 export const FLUSH_ALARM = 'flush-queue';
 // The scripts the manifest injects on ad pages, in order. scanTab() injects the same files on demand;
 // a test checks this list against the manifest so the two cannot drift apart.
-export const CONTENT_FILES = ['parsers/jsonld.js', 'parsers/duunitori.js', 'content/duunitori.js'];
+export const CONTENT_FILES = DUUNITORI_FILES;
 
 const keyOf = (tabId) => `tab:${tabId}`;
 // Same ad = same page address. The query string and fragment are ignored: a page can add tracking parameters or
@@ -123,20 +124,26 @@ export function createController({ api, backend, store, queue, getSettings }) {
     }
   }
 
+  // A reader found an ad in a visible tab (the Duunitori reader on its own, the generic one on request).
+  async function viewed(tabId, capture) {
+    const base = { url: capture.job.url, capture };
+    bump(tabId); // cancels any request still running for this tab
+    if (capture.expired) return setState(tabId, { ...base, status: 'expired' });
+    if (NEEDED_TO_SCORE.some((field) => capture.quality.missing.includes(field))) {
+      return setState(tabId, { ...base, status: 'incomplete' });
+    }
+    // A page that does not look like a job ad is not sent for scoring on its own: it would cost an LLM call and
+    // leave a record for every stray page that was read. "Score anyway" in the popup goes ahead.
+    if (capture.quality.confidence === 'low') return setState(tabId, { ...base, status: 'idle', why: 'low-confidence' });
+    if (!(await getSettings()).autoScore) return setState(tabId, { ...base, status: 'idle', why: 'autoscore-off' });
+    return score(tabId, base, { force: false });
+  }
+
   return {
     flushQueue,
 
-    // The content script found an ad in a visible tab.
-    async onAdViewed(tabId, capture) {
-      const base = { url: capture.job.url, capture };
-      bump(tabId); // cancels any request still running for this tab
-      if (capture.expired) return setState(tabId, { ...base, status: 'expired' });
-      if (NEEDED_TO_SCORE.some((field) => capture.quality.missing.includes(field))) {
-        return setState(tabId, { ...base, status: 'incomplete' });
-      }
-      if (!(await getSettings()).autoScore) return setState(tabId, { ...base, status: 'idle' });
-      return score(tabId, base, { force: false });
-    },
+    // A reader found an ad in a visible tab.
+    onAdViewed: viewed,
 
     // The content script could not read the ad. Keep the reason so the popup can show it.
     async onAdError(tabId, { url, error }) {
@@ -147,9 +154,16 @@ export function createController({ api, backend, store, queue, getSettings }) {
     // Read the ad in this tab now, by injecting the same scripts the manifest would have. Needs only the
     // access the browser grants when the popup is opened (activeTab), so it works even when the page was
     // loaded before the extension, or the browser did not inject the scripts for lack of site access.
-    async scanTab(tabId) {
+    async scanTab(tabId, url) {
+      // Without an address (the browser withheld it) keep the Duunitori reader: it is what the extension is for.
+      const reader = url ? readerFor(url) : { kind: 'duunitori', files: DUUNITORI_FILES };
+      if (!reader.kind) {
+        const error = WHY[reader.why] || 'This page cannot be read.';
+        await setState(tabId, { url: url || '', status: 'unreadable', error });
+        return { ok: false, error };
+      }
       try {
-        await api.scripting.executeScript({ target: { tabId }, files: CONTENT_FILES });
+        await api.scripting.executeScript({ target: { tabId }, files: reader.files });
         return { ok: true };
       } catch (e) {
         const error = `Could not read the page: ${(e && e.message) || e}`;
@@ -171,7 +185,7 @@ export function createController({ api, backend, store, queue, getSettings }) {
     // Save or reject the ad in this tab.
     async perform(tabId, action) {
       const state = await store.get(keyOf(tabId));
-      if (!state || !state.capture) return { ok: false, error: 'No job ad in this tab.' };
+      if (!state || !state.capture) return { ok: false, noAd: true, error: 'No job ad in this tab.' };
       const refuse = async (error) => {
         await setState(tabId, { ...state, notice: error });
         return { ok: false, error };
@@ -206,6 +220,42 @@ export function createController({ api, backend, store, queue, getSettings }) {
         await setState(tabId, { ...state, status: 'error', error: e.message });
         return { ok: false, error: e.message };
       }
+    },
+
+    // Correct the title or company the reader guessed (or could not find). Stored records are corrected too.
+    async editCapture(tabId, fields) {
+      const state = await store.get(keyOf(tabId));
+      if (!state || !state.capture) return { ok: false, error: 'Nothing to edit.' };
+      if (state.decision) return { ok: false, error: 'Already decided: change it in the web app.' };
+      const job = { ...state.capture.job };
+      const quality = { ...state.capture.quality, missing: [...state.capture.quality.missing], guessed: [...(state.capture.quality.guessed || [])] };
+      const changed = {};
+      for (const key of ['title', 'company']) {
+        const value = typeof fields[key] === 'string' ? fields[key].trim() : '';
+        if (!value || value === job[key]) continue;
+        job[key] = changed[key] = value;
+        quality.missing = quality.missing.filter((m) => m !== key);
+        quality.guessed = quality.guessed.filter((g) => g !== key);
+      }
+      if (!Object.keys(changed).length) return { ok: true, unchanged: true };
+      const capture = { ...state.capture, job, quality };
+      const id = state.preview && state.preview.id;
+      if (id) {
+        try {
+          await backend.update(id, changed);
+        } catch (e) {
+          await setState(tabId, { ...state, notice: `Could not update the stored record: ${e.message}` });
+          return { ok: false, error: e.message };
+        }
+      }
+      // Already scored: the score came from the text, which did not change. Otherwise start the normal flow, which
+      // may now be able to score (a missing company was what stopped it).
+      if (state.status === 'scored' || state.status === 'saving') {
+        await setState(tabId, { ...state, capture, notice: undefined });
+      } else {
+        await viewed(tabId, capture);
+      }
+      return { ok: true };
     },
 
     // Put the ad back to how it was before the last save or reject.

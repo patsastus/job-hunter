@@ -185,7 +185,9 @@ test('a tab closed mid-update does not break the controller', async () => {
 
 test('popup view per state', () => {
   const state = (status, extra = {}) => ({ status, url: URL1, capture: capture(), ...extra });
-  assert.equal(viewFor(null, 'https://example.com/').kind, 'not-ad');
+  assert.equal(viewFor(null, 'https://example.com/').kind, 'unknown-page', 'an unknown site can be read on request');
+  assert.equal(viewFor(null, 'https://duunitori.fi/tyopaikat?haku=go').kind, 'not-ad', 'a Duunitori list page is not an ad');
+  assert.equal(viewFor(null, 'about:blank').kind, 'not-ad');
   assert.equal(viewFor(null, URL1).kind, 'waiting');
   assert.equal(viewFor(null, URL1 + '?utm=x#top').kind, 'waiting');
 

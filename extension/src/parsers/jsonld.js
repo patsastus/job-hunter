@@ -30,6 +30,54 @@
     return null;
   };
 
+  function collectJobPostings(node, out) {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+      node.forEach((n) => collectJobPostings(n, out));
+      return out;
+    }
+    const type = node['@type'];
+    if (type === 'JobPosting' || (Array.isArray(type) && type.includes('JobPosting'))) out.push(node);
+    collectJobPostings(node['@graph'], out);
+    collectJobPostings(node.itemListElement, out); // listing pages wrap postings in an ItemList
+    collectJobPostings(node.item, out);
+    return out;
+  }
+
+  // Every JobPosting on the page (a careers index can list many), in document order.
+  JH.parseAllJsonLd = function (doc) {
+    const out = [];
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        collectJobPostings(JSON.parse(script.textContent), out);
+      } catch (e) {
+        // skip malformed JSON
+      }
+    }
+    return out;
+  };
+
+  // Small helpers for readers: real pages give a string, an array, an object or nothing for the same field.
+  JH.util = {
+    first: (value) => (Array.isArray(value) ? value[0] : value),
+    str: (value) => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : ''),
+    attempt(fn, fallback = '') {
+      try {
+        const value = fn();
+        return value == null ? fallback : value;
+      } catch (e) {
+        return fallback;
+      }
+    },
+    // True when `value` (ISO date or datetime) is before now. A bare date means "valid through that day".
+    isPast(value, now) {
+      if (!value) return false;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value < now.toISOString().slice(0, 10);
+      const t = Date.parse(value);
+      return !Number.isNaN(t) && t < now.getTime();
+    },
+  };
+
   // HTML (as found in JSON-LD descriptions) to readable text, keeping paragraph and list breaks.
   // DOMParser makes an inert document, so images and scripts in the ad are never loaded or run.
   JH.htmlToText = function (html, doc) {

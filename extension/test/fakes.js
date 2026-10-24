@@ -30,6 +30,7 @@ export function fakeBackend(over = {}) {
     scorePreview: record('scorePreview', over.scorePreview || (async () => preview())),
     recordSeen: record('recordSeen', over.recordSeen || (async () => preview({ id: 7, fit_score: null, fit_reason: null }))),
     save: record('save', over.save || (async () => ({ id: 1, status: 'saved', fit_score: 82, fit_reason: 'Good Go match.' }))),
+    update: record('update', over.update || (async (id, fields) => ({ id, status: 'seen', ...fields }))),
     setStatus: record('setStatus', over.setStatus || (async (id, status) => ({ id, status, fit_score: 82, fit_reason: 'Good Go match.' }))),
   };
   backend.calls = calls;

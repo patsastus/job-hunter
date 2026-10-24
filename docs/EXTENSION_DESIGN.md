@@ -85,6 +85,22 @@ The parser only reads; it does not click or change the page. LinkedIn pages load
 as" snapshots lack the description, so LinkedIn adapters are tested on snapshots exported by the
 extension itself ("Copy debug snapshot" in the popup menu).
 
+## Generic reader (built)
+
+Other sites are read only on request: the popup's **Read this page** (or the shortcut on an unread tab) injects
+`parsers/jsonld.js`, `parsers/generic.js` and `content/generic.js` into that one tab (`activeTab` + `scripting`). It is
+never declared in the manifest, so it can never run by itself. Decisions:
+
+- **Confidence, not pretence.** `quality.confidence` is `high` (JobPosting data), `medium` (job-ad words, a selection, or
+  an ambiguous listing) or `low`. `quality.guessed` names every field not read from structured data. A `low` page is not
+  scored automatically ("Score anyway" is one click) so stray pages cost no LLM call and leave no `seen` record.
+- **Correctable.** A guessed or missing title/company can be typed in the popup; the stored record is updated (PATCH).
+- **Backend identity had to change** for unknown sites: `canonical_url` keeps identifying query parameters
+  (`?gh_jid=123`) and drops only tracking ones, and a fingerprint with no location includes the URL. Otherwise two
+  openings on one careers page, or two same-titled roles with no parsed location, would merge into one record.
+- **Descriptions are capped** at 12,000 characters.
+- LinkedIn stays a separate, later adapter: it has no structured data and heavy markup.
+
 ## Browser differences (the learning part)
 
 | Concern | Chrome | Firefox | Handling |

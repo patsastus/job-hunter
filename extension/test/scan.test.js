@@ -127,7 +127,8 @@ test('popup view for unreadable and for waiting', () => {
   const gaveUp = viewFor(null, URL1, { gaveUp: true });
   assert.match(gaveUp.message, /about:addons/);
   assert.deepEqual(gaveUp.actions.map((a) => a.id), ['scan-tab']);
-  assert.equal(viewFor(null, 'https://example.com/', { gaveUp: true }).kind, 'not-ad');
+  assert.equal(viewFor(null, 'https://example.com/', { gaveUp: true }).kind, 'unknown-page', 'only a page the user asked to read can be "waiting"');
+  assert.equal(viewFor(null, 'about:blank', { gaveUp: true }).kind, 'not-ad');
   assert.doesNotMatch(JSON.stringify(waiting), /[Rr]eload/, 'never asks for a reload: that closes the popup');
 });
 

@@ -24,7 +24,9 @@ async function handle(message, sender) {
       if (!sender.tab) return null;
       return controller.onAdError(sender.tab.id, { url: message.url, error: message.error });
     case 'scan-tab':
-      return controller.scanTab(message.tabId);
+      return controller.scanTab(message.tabId, message.url);
+    case 'edit':
+      return controller.editCapture(message.tabId, message.fields || {});
     case 'get-state':
       return controller.getState(message.tabId, message.url);
     case 'score-now':
@@ -59,7 +61,10 @@ api.commands.onCommand.addListener(async (command) => {
   const action = SHORTCUT_ACTIONS[command];
   if (!action) return;
   const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
-  if (tab) await controller.perform(tab.id, action);
+  if (!tab) return;
+  const result = await controller.perform(tab.id, action);
+  // Nothing has been read in this tab yet: read it (and score it) instead of saving blind. A second press decides.
+  if (result.noAd) await controller.scanTab(tab.id, tab.url);
 });
 
 // Send decisions that were made while the backend was unreachable.

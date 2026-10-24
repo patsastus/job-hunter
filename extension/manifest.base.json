@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Hunter",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Scores job ads as you read them against your own profile, and keeps the ones that matter in your local Job Hunter.",
   "permissions": ["storage", "activeTab", "alarms", "scripting"],
   "host_permissions": ["http://jobs.test/*"],

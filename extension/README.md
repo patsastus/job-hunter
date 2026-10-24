@@ -54,6 +54,12 @@ something fails it shows the actual reason:
 - **"Cannot reach the backend at …":** the backend is down, or the extension is not allowed to reach it. The popup
   offers an **Allow access** button when the browser says the permission is missing. Firefox treats site access as
   something you grant: if it persists, open about:addons → Job Hunter → Permissions and allow `jobs.test`.
+- **"Cannot reach the backend … (TypeError: NetworkError when attempting to fetch resource.)" in Firefox while
+  the same URL opens in a tab:** Firefox's default policy for Manifest V3 extension pages includes
+  `upgrade-insecure-requests`, which rewrites the extension's `http://jobs.test` requests to `https://` (loopback
+  addresses are exempt, host names are not), and the TLS handshake against a plain-http backend then fails. The Firefox
+  build therefore states its own policy without that directive (`content_security_policy` in `build.mjs`). If you see
+  this message again, check that the loaded build is the one from `dist/firefox` and that it is version 0.3.1 or later.
 - **"Could not read the page: …":** the browser refused to let the extension into the tab. In Firefox, allow
   `duunitori.fi` under the same Permissions tab. This also makes ads score automatically as you browse, without
   opening the popup (Firefox does not run the extension's page scripts until that site access is granted).
@@ -101,7 +107,7 @@ npm run lint   # builds, then Mozilla's addons-linter on the Firefox build (exit
 The Duunitori fixture is **synthetic** (hand-written to match the markup the parser expects). Replace it with
 real snapshots once the extension can export them.
 
-Verified so far: all unit tests (including the real `background.js` loaded against a fake browser, and the parser against awkward JSON-LD shapes);
+Verified so far (including the Firefox http-upgrade fix, against the real gateway in an isolated Firefox 158): all unit tests (including the real `background.js` loaded against a fake browser, and the parser against awkward JSON-LD shapes);
 `addons-linter` (0 errors; one warning about Firefox's `data_collection_permissions` key, deliberately
 not set); an end-to-end run of the Chrome build in a real Chrome against a stub backend (scoring, save, undo,
 reject, the popup's buttons, the offline queue and its replay, the registered shortcuts, reading an unread ad from the

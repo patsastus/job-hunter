@@ -64,7 +64,7 @@ test('scorePreview posts the job as JSON, with ?force only when asked', async ()
 test('backend errors are classified as offline, timeout or http', async () => {
   const make = (handler, extra = {}) => createBackend({ getBaseUrl: async () => 'http://jobs.test', fetchFn: fakeFetch(handler), ...extra });
   await assert.rejects(make(() => { throw new TypeError('Failed to fetch'); }).scorePreview({}),
-    (e) => e instanceof BackendError && e.kind === 'offline' && /jobs\.test/.test(e.message));
+    (e) => e instanceof BackendError && e.kind === 'offline' && /jobs\.test/.test(e.message) && /TypeError: Failed to fetch/.test(e.message));
   await assert.rejects(make(() => fail(422, { detail: "'seen' records are created elsewhere" })).scorePreview({}),
     (e) => e.kind === 'http' && e.status === 422 && e.message === "'seen' records are created elsewhere");
   await assert.rejects(make(() => fail(422, { detail: [{ loc: ['body'] }] })).scorePreview({}),

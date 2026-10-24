@@ -25,7 +25,8 @@ export function createBackend({ getBaseUrl, fetchFn = (...args) => fetch(...args
       res = await fetchFn(base + path, { ...init, signal: controller.signal });
     } catch (e) {
       if (e && e.name === 'AbortError') throw new BackendError('timeout', 'The backend took too long to answer.');
-      throw new BackendError('offline', `Cannot reach the backend at ${base}.`);
+      // Keep the browser's own wording: "NetworkError when attempting to fetch resource" is the clue that matters.
+      throw new BackendError('offline', `Cannot reach the backend at ${base} (${(e && e.name) || 'Error'}: ${(e && e.message) || e}).`);
     } finally {
       clearTimeout(timer);
     }

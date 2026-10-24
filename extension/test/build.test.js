@@ -12,7 +12,7 @@ test('the two manifests differ only where the browsers differ', async () => {
   assert.deepEqual(firefox.background, { scripts: ['background.js'], type: 'module' });
   assert.equal(chrome.browser_specific_settings, undefined);
   assert.equal(firefox.browser_specific_settings.gecko.id, 'job-hunter@nraatika.local');
-  const strip = ({ background, browser_specific_settings, ...rest }) => rest;
+  const strip = ({ background, browser_specific_settings, content_security_policy, ...rest }) => rest;
   assert.deepEqual(strip(chrome), strip(firefox));
 });
 
@@ -52,4 +52,14 @@ test('the scripts scanTab() injects are exactly the ones the manifest injects', 
   const { CONTENT_FILES } = await import('../src/lib/controller.js');
   const m = await buildManifest('chrome');
   assert.deepEqual(CONTENT_FILES, m.content_scripts[0].js);
+});
+
+test("Firefox's extension pages must not upgrade http:// requests (the backend is plain http on a host name)", async () => {
+  const firefox = await buildManifest('firefox');
+  const csp = firefox.content_security_policy.extension_pages;
+  assert.match(csp, /script-src 'self'/);
+  assert.doesNotMatch(csp, /upgrade-insecure-requests/);
+  // Chrome's default policy has no such directive, so the Chrome build states none.
+  assert.equal((await buildManifest('chrome')).content_security_policy, undefined);
+  assert.match((await import('node:fs')).readFileSync(new URL('../build.mjs', import.meta.url), 'utf8'), /upgrade-insecure-requests/, 'the reason is documented next to the setting');
 });

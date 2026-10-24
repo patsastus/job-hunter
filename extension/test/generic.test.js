@@ -88,13 +88,14 @@ test('odd structured-data shapes degrade per field and never throw', () => {
 
 // --- pages without structured data ------------------------------------------------------------
 
-test('a markup-only page is read from the heading, the site name and the main text, and says what it guessed', () => {
+test('a markup-only page is read from the heading, the site name and the main text; only the inferred company is a guess', () => {
   const { job, quality } = readFixture('careers-markup.html');
   assert.equal(job.title, 'Platform Engineer');
   assert.equal(job.company, 'Northwind');
   assert.match(job.descriptionSnippet, /Responsibilities/);
   assert.match(job.descriptionSnippet, /- Operate Kubernetes in production/);
-  assert.deepEqual(quality.guessed.sort(), ['company', 'descriptionSnippet', 'title']);
+  // The heading and the job section are stated by the page; the company came from the site name, so it is shown for confirmation.
+  assert.deepEqual(quality.guessed, ['company']);
   assert.equal(quality.confidence, 'medium');
   assert.deepEqual(quality.missing, []);
   assert.equal(job.raw.method, 'heuristic');
@@ -162,4 +163,96 @@ test('a page with nothing recognisable reports exactly what is missing', () => {
   assert.equal(job.title, '');
   assert.deepEqual(quality.missing.slice(0, 2), ['title', 'company']);
   assert.equal(quality.confidence, 'low');
+});
+
+// --- a real page: Hive Helsinki's job board (Yoast WebPage data, labelled facts, a sidebar) -----
+
+const HIVE_URL = 'https://www.hive.fi/hire/offer/junior-coder-tester/';
+const hive = () => readFixture('real-hive-offer.html', { url: HIVE_URL });
+
+test('real page: the employer, location and posting date come from the labelled markup, not the board name', () => {
+  const { job } = hive();
+  assert.equal(job.title, 'Junior Coder/Tester');
+  assert.equal(job.company, 'Qurios Oy', 'the employer, not "hive.fi" (the board)');
+  assert.equal(job.location, 'Helsinki, Uusimaa, Finland');
+  assert.equal(job.jobType, 'Internship, Hybrid');
+  assert.equal(job.published, '22.10.2026');
+  assert.equal(job.deadline, '', '"Open application" is not a date');
+});
+
+test('real page: a plain, short job ad is not mistaken for a non-job', () => {
+  const { quality } = hive();
+  assert.notEqual(quality.confidence, 'low');
+  assert.equal(quality.confidence, 'medium', 'no JobPosting data, but the address, title and labelled facts all say job');
+});
+
+test('real page: the prose is kept clean and the sidebar facts are added for the scorer', () => {
+  const { job } = hive();
+  assert.match(job.descriptionSnippet, /^About the Role\n\nGreetings Hivers!/);
+  assert.match(job.descriptionSnippet, /internship candidate who can handle mainly html and Javascript/);
+  assert.match(job.descriptionSnippet, /Role type: Internship/);
+  assert.match(job.descriptionSnippet, /Working hours: Flexible \/ To be agreed/);
+  assert.match(job.descriptionSnippet, /Duration: Fixed-term/);
+  assert.match(job.descriptionSnippet, /Preferred start: ASAP/);
+  for (const noise of ['Skip to content', 'How to Apply', 'The Selection Sprint', 'Log out', 'Apply Now']) {
+    assert.equal(job.descriptionSnippet.includes(noise), false, `"${noise}" (site chrome) leaked into the description`);
+  }
+});
+
+test('real page: only the genuinely uncertain fields are called guesses', () => {
+  const { quality } = hive();
+  assert.deepEqual(quality.guessed, ['company'], 'the company came from a class name, so it is shown for confirmation; the rest was read from labelled markup');
+  assert.deepEqual(quality.missing, []);
+});
+
+test('real page: the sidebar contact address is not scraped into any field', () => {
+  const text = JSON.stringify(hive().job);
+  assert.equal(/@/.test(text.replace(/apply@example\.invalid/g, '')), false);
+});
+
+// --- the tuning must generalise, not be specific to this page ----------------------------------
+
+test('labelled facts are read from definition lists and two-column tables, in English and Finnish', () => {
+  const body = (facts) => `<main><h1>Backend Developer</h1><p>${'About the role: responsibilities and requirements for this position. '.repeat(10)}</p>${facts}</main>`;
+  const dl = read(page('<title>Backend Developer</title>', body('<dl><dt>Yritys</dt><dd>Aalto Oy</dd><dt>Sijainti</dt><dd>Espoo</dd><dt>Hakuaika</dt><dd>1.10.2026 - 30.11.2026</dd><dt>Työsuhde</dt><dd>Kokoaikainen</dd></dl>')), { url: 'https://example.fi/rekry/dev' }).job;
+  assert.deepEqual([dl.company, dl.location, dl.deadline, dl.jobType], ['Aalto Oy', 'Espoo', '30.11.2026', 'Kokoaikainen']);
+  const table = read(page('<title>Backend Developer</title>', body('<table><tr><th>Employer</th><td>Beta Ltd</td></tr><tr><th>Location</th><td>Tampere</td></tr></table>')), { url: 'https://example.com/jobs/dev' }).job;
+  assert.deepEqual([table.company, table.location], ['Beta Ltd', 'Tampere']);
+});
+
+test('facts outside the job content (site footer, menus) are not used', () => {
+  const html = page('<title>Dev</title>', `<main><h1>Dev</h1><p>${'Responsibilities and requirements. '.repeat(20)}</p></main><footer><dl><dt>Location</dt><dd>Footer City</dd><dt>Company</dt><dd>Footer Corp</dd></dl></footer>`);
+  const { job } = read(html, { url: 'https://example.com/jobs/dev' });
+  assert.notEqual(job.location, 'Footer City');
+  assert.notEqual(job.company, 'Footer Corp');
+});
+
+test('itemprop markup counts as stated by the page, not guessed', () => {
+  const html = page('<title>Dev</title>', `<main><h1>Dev</h1><span itemprop="hiringOrganization">Micro Oy</span><p>${'Responsibilities and requirements. '.repeat(20)}</p></main>`);
+  const { job, quality } = read(html, { url: 'https://example.com/jobs/dev' });
+  assert.equal(job.company, 'Micro Oy');
+  assert.ok(!quality.guessed.includes('company'));
+});
+
+test('class hints ignore logos, menus and long text', () => {
+  const html = page('<title>Dev</title>', `<main><h1>Dev</h1><div class="company-logo">LOGO TEXT</div><nav class="company-menu">Menu Item</nav><p class="company-description">${'x'.repeat(200)}</p><span class="job-company">Real Oy</span><p>${'Responsibilities and requirements. '.repeat(20)}</p></main>`);
+  assert.equal(read(html, { url: 'https://example.com/jobs/dev' }).job.company, 'Real Oy');
+});
+
+test('an ordinary article stays low confidence even with the new signals', () => {
+  assert.equal(readFixture('article.html', { url: 'https://thedaily.example/news/budget' }).quality.confidence, 'low');
+  assert.equal(readFixture('article.html', { url: 'https://thedaily.example/careers-advice/how-to-write-a-cv' }).quality.confidence, 'low', 'a "careers" path alone is not enough: the text must not be an ad');
+});
+
+test('the address and the title count towards "is this a job ad", and are not enough on their own for plain prose', () => {
+  const prose = '<main><p>' + 'Some neutral sentence about nothing in particular. '.repeat(30) + '</p></main>';
+  assert.equal(read(page('<title>Senior Developer</title>', '<h1>Senior Developer</h1>' + prose), { url: 'https://example.com/jobs/senior-developer' }).quality.confidence, 'medium');
+  assert.equal(read(page('<title>Welcome</title>', '<h1>Welcome</h1>' + prose), { url: 'https://example.com/welcome' }).quality.confidence, 'low');
+});
+
+test('the description is only called a guess when it came from the whole page body', () => {
+  const inMain = read(page('<title>Dev</title>', `<main><h1>Dev</h1><p>${'Responsibilities and requirements. '.repeat(30)}</p></main>`), { url: 'https://example.com/jobs/dev' });
+  assert.ok(!inMain.quality.guessed.includes('descriptionSnippet'));
+  const bodyOnly = read(page('<title>Dev</title>', `<div><h1>Dev</h1><p>${'Responsibilities and requirements. '.repeat(30)}</p></div>`), { url: 'https://example.com/jobs/dev' });
+  assert.ok(bodyOnly.quality.guessed.includes('descriptionSnippet'));
 });

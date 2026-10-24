@@ -52,23 +52,29 @@ until you press it (or press the save/reject shortcut on a page that has not bee
 instead of saving blind; a second press decides). It reads that one page, using only the access the popup click grants.
 
 What it reads, in order of trust: the schema.org `JobPosting` data most careers pages and applicant-tracking systems
-embed (title, company, location, remote, salary, dates, employment type, description), then the page's own markup and
-site name, then any text you selected (a selection of 200+ characters becomes the description, which is the way to rescue
-a cluttered page). Company names on shared job boards come from the address (`boards.greenhouse.io/northwind/…` is
+embed (title, company, location, remote, salary, dates, employment type, description); then what the page states in its
+own markup (the `h1`, `itemprop` attributes, and labelled facts such as `Location: Helsinki` in definition lists and
+two-column tables, in English and Finnish); then things it can only infer (a class name like `…-company`, the site name,
+the document title, the web address); then any text you selected (200+ characters become the description, which is the way
+to rescue a cluttered page). The details from a sidebar (role type, hours, duration) are added to the text that is scored,
+because "internship, hybrid" matters for fit even though it is not part of the prose. Company names on shared job boards come from the address (`boards.greenhouse.io/northwind/…` is
 Northwind, not Greenhouse).
 
 It is honest about doubt:
 
-- **Guessed fields are stated** ("Guessed from the page, not stated by it: title, company") and a small form lets you
-  correct the title and company. A correction also updates the stored record.
-- **A page that does not look like a job ad is not scored automatically** (no structured data and few job-ad words): the
+- **Inferred fields are flagged** ("Guessed from the page, not stated by it: company") and a small form, pre-filled with
+  the guess, lets you confirm or correct the title and company. A correction also updates the stored record.
+- **A page that does not look like a job ad is not scored automatically** (judged from the job-ad wording, the address, the
+  title and the labelled facts together, so a short plain ad still counts): the
   popup says so and offers **Score anyway**. Otherwise every stray page you read would cost an LLM call and leave a record.
 - A page listing several jobs picks the one for this address, or says it could not tell.
 - Descriptions are capped at 12,000 characters, so a long page is not sent whole.
 
 Known limits: LinkedIn pages have no structured data and heavy markup, so the generic read will be rough there (a
 dedicated adapter is planned); pages that load their text lazily may yield little until the text is on screen (select it,
-then read); the test pages are synthetic, so how well it does on the sites you really use is the open question.
+then read); the fixtures are mostly synthetic. One real page (a Hive Helsinki job offer, `real-hive-offer.html`, with scripts and the
+contact address removed) shaped the labelled-facts and job-ad-evidence rules; how well it does on the other sites you use
+is still the open question.
 
 ## Toolbar button
 

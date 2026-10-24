@@ -205,12 +205,6 @@ h2 {
   border-bottom-right-radius: 8px;
 }
 
-.filter-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.25rem;
-}
-
 .filter-group {
   display: flex;
   flex-direction: column;
@@ -440,3 +434,18 @@ h2 {
   box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.2);
 }
 
+
+/* Sort & filter panel: takes the first column slot of the board */
+.filter-panel { gap: 0.85rem; }
+.filter-panel h2 { display: flex; align-items: center; gap: 0.5rem; }
+.filter-check { display: flex; align-items: center; gap: 0.45rem; font-weight: normal; cursor: pointer; }
+.filter-panel-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #dfe1e6;
+  font-size: 0.85rem;
+  color: #5e6c84;
+}

@@ -293,18 +293,6 @@ function App() {
   };
 
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
-  const [showFilterModal, setShowFilterModal] = useState<boolean>(false);
-
-  // Close modal on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && showFilterModal) {
-        setShowFilterModal(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showFilterModal]);
 
   const resetFilters = () => setFilters(DEFAULT_FILTERS);
 
@@ -686,10 +674,12 @@ function App() {
 
   const percent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
   const activeFilterCount = getActiveFilterCount();
-  const inboxJobs = getFilteredJobs('new');
   const savedJobs = getFilteredJobs('saved');
   const appliedJobs = getFilteredJobs('applied');
-  const totalFilteredJobs = inboxJobs.length + savedJobs.length + appliedJobs.length;
+  const totalFilteredJobs = savedJobs.length + appliedJobs.length;
+  // The jobs a column can show at all. Counts in the filter panel are against these, not against every job in the
+  // database (rejected and viewed-only jobs have no column).
+  const boardJobs = jobs.filter(j => j.status === 'saved' || j.status === 'applied');
 
   return (
     <div className="dashboard">
@@ -706,21 +696,6 @@ function App() {
             />
           </div>
           <div style={{display: 'flex', gap: '0.75rem', alignItems: 'center'}}>
-            <button 
-              className="btn outline" 
-              style={{
-                color: 'white', 
-                borderColor: activeFilterCount > 0 ? '#ffab00' : 'white',
-                background: activeFilterCount > 0 ? 'rgba(255, 171, 0, 0.2)' : 'transparent',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem'
-              }} 
-              onClick={() => setShowFilterModal(true)}
-            >
-              ⚡ Sort & Filter
-              {activeFilterCount > 0 && <span className="badge-count">{activeFilterCount}</span>}
-            </button>
             <button 
               className="btn outline" 
               style={{
@@ -956,14 +931,143 @@ function App() {
       )}
 
       <div className="board">
-        <div className="column">
-          <h2>Inbox <span className="badge">{inboxJobs.length}</span></h2>
-          {inboxJobs.length === 0 && (
-            <p style={{color: '#6b778c', fontSize: '0.85rem', fontStyle: 'italic', textAlign: 'center', marginTop: '1rem'}}>
-              No jobs match criteria
-            </p>
-          )}
-          {inboxJobs.map(j => <JobCard key={j.id} job={j} />)}
+        <div className="column filter-panel">
+          <h2>
+            ⚡ Sort &amp; Filter
+            {activeFilterCount > 0 && <span className="badge">{activeFilterCount}</span>}
+          </h2>
+
+          <div className="filter-group">
+            <label htmlFor="filter-sort">Sort by</label>
+            <select
+              id="filter-sort"
+              className="filter-input"
+              value={filters.sortBy}
+              onChange={(e) => setFilters(prev => ({ ...prev, sortBy: e.target.value as SortOption }))}
+            >
+              <option value="newest">🆕 Newest Added First</option>
+              <option value="score_desc">🌟 Best Fit Score (High to Low)</option>
+              <option value="deadline_asc">⏳ Soonest Deadline First</option>
+              <option value="deadline_desc">📅 Furthest Deadline First</option>
+              <option value="score_asc">📉 Lowest Fit Score</option>
+              <option value="company_asc">🏢 Company Name (A to Z)</option>
+              <option value="title_asc">🏷️ Job Title (A to Z)</option>
+              <option value="oldest">📜 Oldest Added First</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label htmlFor="filter-search">Keyword / text search</label>
+            <input
+              id="filter-search"
+              type="text"
+              className="filter-input"
+              placeholder="Title, company, skills, reason..."
+              value={filters.searchQuery}
+              onChange={(e) => setFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
+            />
+          </div>
+
+          <div className="filter-group">
+            <label htmlFor="filter-location">Location</label>
+            <input
+              id="filter-location"
+              type="text"
+              className="filter-input"
+              placeholder="e.g. Helsinki, Espoo, Remote..."
+              value={filters.location}
+              onChange={(e) => setFilters(prev => ({ ...prev, location: e.target.value }))}
+            />
+          </div>
+
+          <div className="filter-group">
+            <label htmlFor="filter-minscore">Minimum AI fit score: <strong>{filters.minScore > 0 ? `≥ ${filters.minScore}` : 'any'}</strong></label>
+            <input
+              id="filter-minscore"
+              type="range"
+              min="0"
+              max="95"
+              step="5"
+              value={filters.minScore}
+              onChange={(e) => setFilters(prev => ({ ...prev, minScore: Number(e.target.value) }))}
+              style={{width: '100%', cursor: 'pointer', accentColor: '#0052cc'}}
+            />
+            <div className="preset-buttons">
+              {[[0, 'All'], [50, '50+'], [70, '70+'], [85, '85+']].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`preset-btn ${filters.minScore === value ? 'active' : ''}`}
+                  onClick={() => setFilters(prev => ({ ...prev, minScore: value as number }))}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="filter-group">
+            <label htmlFor="filter-source">Platform / source</label>
+            <select
+              id="filter-source"
+              className="filter-input"
+              value={filters.source}
+              onChange={(e) => setFilters(prev => ({ ...prev, source: e.target.value as FilterState['source'] }))}
+            >
+              <option value="all">All sources ({boardJobs.length})</option>
+              <option value="op_kiitorata_2027">🚀 OP Kiitorata 2027 ({boardJobs.filter(j => j.source === 'op_kiitorata_2027' || j.url.includes('op-careers.fi')).length})</option>
+              <option value="duunitori_auto">Duunitori Auto ({boardJobs.filter(j => j.source === 'duunitori_auto').length})</option>
+              <option value="extension">Browser Extension ({boardJobs.filter(j => j.source === 'extension').length})</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label htmlFor="filter-scorestatus">Scoring status</label>
+            <select
+              id="filter-scorestatus"
+              className="filter-input"
+              value={filters.scoreStatus}
+              onChange={(e) => setFilters(prev => ({ ...prev, scoreStatus: e.target.value as FilterState['scoreStatus'] }))}
+            >
+              <option value="all">All jobs</option>
+              <option value="scored_only">Scored only</option>
+              <option value="unscored_only">Unscored only</option>
+            </select>
+          </div>
+
+          <div className="filter-group">
+            <label>Deadlines</label>
+            <label className="filter-check">
+              <input
+                id="filter-deadline-only"
+                type="checkbox"
+                checked={filters.deadlineOnly}
+                onChange={(e) => setFilters(prev => ({ ...prev, deadlineOnly: e.target.checked }))}
+              />
+              Must have a deadline
+            </label>
+            <label className="filter-check">
+              <input
+                id="filter-upcoming-only"
+                type="checkbox"
+                checked={filters.upcomingOnly}
+                onChange={(e) => setFilters(prev => ({ ...prev, upcomingOnly: e.target.checked }))}
+              />
+              Upcoming only (deadline today or later)
+            </label>
+          </div>
+
+          <div className="filter-panel-footer">
+            <span>Showing <strong>{totalFilteredJobs}</strong> of {boardJobs.length}</span>
+            <button
+              className="btn outline"
+              onClick={resetFilters}
+              disabled={activeFilterCount === 0}
+              style={{opacity: activeFilterCount === 0 ? 0.5 : 1}}
+            >
+              Reset
+            </button>
+          </div>
         </div>
         
         <div className="column">
@@ -986,192 +1090,6 @@ function App() {
           {appliedJobs.map(j => <JobCard key={j.id} job={j} />)}
         </div>
       </div>
-
-      {showFilterModal && (
-        <div className="modal-backdrop" onClick={() => setShowFilterModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 style={{margin: 0, fontSize: '1.2rem'}}>⚡ Sort & Filter Jobs</h2>
-              <button 
-                onClick={() => setShowFilterModal(false)}
-                style={{background: 'none', border: 'none', fontSize: '1.4rem', cursor: 'pointer', color: '#6b778c'}}
-              >
-                ✕
-              </button>
-            </div>
-            
-            <div className="modal-body">
-              <div className="filter-grid">
-                
-                {/* 1. Sorting */}
-                <div className="filter-group">
-                  <label>Sort By</label>
-                  <select 
-                    className="filter-input"
-                    value={filters.sortBy}
-                    onChange={(e) => setFilters(prev => ({ ...prev, sortBy: e.target.value as SortOption }))}
-                  >
-                    <option value="newest">🆕 Newest Added First</option>
-                    <option value="score_desc">🌟 Best Fit Score (High to Low)</option>
-                    <option value="deadline_asc">⏳ Soonest Deadline First</option>
-                    <option value="deadline_desc">📅 Furthest Deadline First</option>
-                    <option value="score_asc">📉 Lowest Fit Score</option>
-                    <option value="company_asc">🏢 Company Name (A to Z)</option>
-                    <option value="title_asc">🏷️ Job Title (A to Z)</option>
-                    <option value="oldest">📜 Oldest Added First</option>
-                  </select>
-                </div>
-
-                {/* 2. Platform / Source */}
-                <div className="filter-group">
-                  <label>Platform / Source</label>
-                  <select 
-                    className="filter-input"
-                    value={filters.source}
-                    onChange={(e) => setFilters(prev => ({ ...prev, source: e.target.value as any }))}
-                  >
-                    <option value="all">All Sources ({jobs.length})</option>
-                    <option value="op_kiitorata_2027">🚀 OP Kiitorata 2027 ({jobs.filter(j => j.source === 'op_kiitorata_2027' || j.url.includes('op-careers.fi')).length})</option>
-                    <option value="duunitori_auto">Duunitori Auto ({jobs.filter(j => j.source === 'duunitori_auto').length})</option>
-                    <option value="extension">Browser Extension ({jobs.filter(j => j.source === 'extension').length})</option>
-                  </select>
-                </div>
-
-                {/* 3. Search Keywords */}
-                <div className="filter-group">
-                  <label>Keyword / Text Search</label>
-                  <input 
-                    type="text"
-                    className="filter-input"
-                    placeholder="Search title, company, skills, reason..."
-                    value={filters.searchQuery}
-                    onChange={(e) => setFilters(prev => ({ ...prev, searchQuery: e.target.value }))}
-                  />
-                </div>
-
-                {/* 4. Location */}
-                <div className="filter-group">
-                  <label>Location</label>
-                  <input 
-                    type="text"
-                    className="filter-input"
-                    placeholder="e.g. Helsinki, Espoo, Remote..."
-                    value={filters.location}
-                    onChange={(e) => setFilters(prev => ({ ...prev, location: e.target.value }))}
-                  />
-                </div>
-
-                {/* 5. Score Filter & Presets */}
-                <div className="filter-group" style={{gridColumn: '1 / -1'}}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                    <label>Minimum AI Fit Score: <strong>{filters.minScore > 0 ? `≥ ${filters.minScore}` : 'Any Score'}</strong></label>
-                  </div>
-                  <input 
-                    type="range"
-                    min="0"
-                    max="95"
-                    step="5"
-                    value={filters.minScore}
-                    onChange={(e) => setFilters(prev => ({ ...prev, minScore: Number(e.target.value) }))}
-                    style={{width: '100%', cursor: 'pointer', accentColor: '#0052cc'}}
-                  />
-                  <div className="preset-buttons">
-                    <button 
-                      type="button"
-                      className={`preset-btn ${filters.minScore === 0 ? 'active' : ''}`}
-                      onClick={() => setFilters(prev => ({ ...prev, minScore: 0 }))}
-                    >
-                      All (0+)
-                    </button>
-                    <button 
-                      type="button"
-                      className={`preset-btn ${filters.minScore === 50 ? 'active' : ''}`}
-                      onClick={() => setFilters(prev => ({ ...prev, minScore: 50 }))}
-                    >
-                      50+ (Decent)
-                    </button>
-                    <button 
-                      type="button"
-                      className={`preset-btn ${filters.minScore === 70 ? 'active' : ''}`}
-                      onClick={() => setFilters(prev => ({ ...prev, minScore: 70 }))}
-                    >
-                      70+ (Strong Match)
-                    </button>
-                    <button 
-                      type="button"
-                      className={`preset-btn ${filters.minScore === 85 ? 'active' : ''}`}
-                      onClick={() => setFilters(prev => ({ ...prev, minScore: 85 }))}
-                    >
-                      85+ (Top Matches)
-                    </button>
-                  </div>
-                </div>
-
-                {/* 6. Scoring Status */}
-                <div className="filter-group">
-                  <label>Scoring Status</label>
-                  <select 
-                    className="filter-input"
-                    value={filters.scoreStatus}
-                    onChange={(e) => setFilters(prev => ({ ...prev, scoreStatus: e.target.value as any }))}
-                  >
-                    <option value="all">All Jobs</option>
-                    <option value="scored_only">Scored Only</option>
-                    <option value="unscored_only">Unscored Only</option>
-                  </select>
-                </div>
-
-                {/* 7. Deadline options */}
-                <div className="filter-group">
-                  <label>Deadlines</label>
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.2rem'}}>
-                    <label style={{display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 'normal', cursor: 'pointer'}}>
-                      <input 
-                        type="checkbox"
-                        checked={filters.deadlineOnly}
-                        onChange={(e) => setFilters(prev => ({ ...prev, deadlineOnly: e.target.checked }))}
-                      />
-                      Must have a deadline specified
-                    </label>
-                    <label style={{display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 'normal', cursor: 'pointer'}}>
-                      <input 
-                        type="checkbox"
-                        checked={filters.upcomingOnly}
-                        onChange={(e) => setFilters(prev => ({ ...prev, upcomingOnly: e.target.checked }))}
-                      />
-                      Upcoming only (deadline ≥ today)
-                    </label>
-                  </div>
-                </div>
-
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
-                <button 
-                  className="btn outline"
-                  onClick={resetFilters}
-                  disabled={activeFilterCount === 0}
-                  style={{opacity: activeFilterCount === 0 ? 0.5 : 1}}
-                >
-                  Reset All Filters
-                </button>
-                <span style={{fontSize: '0.85rem', color: '#5e6c84'}}>
-                  Matching: <strong>{totalFilteredJobs}</strong> of {jobs.length} jobs
-                </span>
-              </div>
-              <button 
-                className="btn save" 
-                onClick={() => setShowFilterModal(false)}
-                style={{minWidth: '90px'}}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <SkillReviewModal
         isOpen={reviewModalState.isOpen}

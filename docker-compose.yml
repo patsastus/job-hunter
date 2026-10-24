@@ -19,6 +19,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/app
+      - /app/.venv # hide a host-side .venv from the container (uvicorn's reloader would poll thousands of its files)
       - /home/nraatika/projects/obsidian-vault/HiveNotes:/vault # Mount Obsidian vault for application notes
     environment:
       - PYTHONUNBUFFERED=1
@@ -30,6 +31,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/app
+      - /app/.venv
     environment:
       - PYTHONUNBUFFERED=1
     command: python scraper.py

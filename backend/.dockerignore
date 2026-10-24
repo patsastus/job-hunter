@@ -1,0 +1,6 @@
+# Not part of the image: a local environment, caches, and the database (it holds personal data and is
+# mounted at runtime anyway).
+.venv
+__pycache__
+.pytest_cache
+*.db

@@ -1,0 +1,26 @@
+[project]
+name = "job-hunter-backend"
+version = "0.1.0"
+description = "Local-first job tracker API: ingest, dedupe, score and track job ads"
+requires-python = ">=3.12"
+# Ranges are deliberately open: uv.lock pins the exact versions, and `uv lock --upgrade` moves them.
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "sqlalchemy",
+    "beautifulsoup4",
+    "requests",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx", # FastAPI's TestClient needs it
+]
+
+[tool.uv]
+package = false # an application run from this folder, not a library to install
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -5,3 +5,4 @@ __pycache__/
 .env
 docker-compose.override.yml
 .pytest_cache/
+.venv/

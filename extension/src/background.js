@@ -20,6 +20,11 @@ async function handle(message, sender) {
     case 'ad-viewed':
       if (!sender.tab) return null;
       return controller.onAdViewed(sender.tab.id, message.capture);
+    case 'ad-error':
+      if (!sender.tab) return null;
+      return controller.onAdError(sender.tab.id, { url: message.url, error: message.error });
+    case 'scan-tab':
+      return controller.scanTab(message.tabId);
     case 'get-state':
       return controller.getState(message.tabId, message.url);
     case 'score-now':
@@ -41,7 +46,7 @@ async function handle(message, sender) {
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handle(message, sender).then(
     (result) => sendResponse(result === undefined ? null : result),
-    (error) => sendResponse({ error: String(error) }),
+    (error) => sendResponse({ failure: String(error) }), // not `error`: states such as "offline" carry that field
   );
   return true; // the response is sent asynchronously
 });

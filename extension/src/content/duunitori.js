@@ -7,10 +7,22 @@
   // Only the ad page itself, not action URLs such as /tyopaikat/tyo/<slug>/lisaa_suosikkeihin.
   if (!/^\/tyopaikat\/tyo\/[^/]+\/?$/.test(location.pathname)) return;
 
-  function report() {
-    const capture = JH.parseDuunitori(document, location.href);
-    const pending = api.runtime.sendMessage({ type: 'ad-viewed', capture });
+  const send = (message) => {
+    const pending = api.runtime.sendMessage(message);
     if (pending && pending.catch) pending.catch(() => {}); // background not ready: nothing to do
+  };
+
+  function report() {
+    let capture;
+    try {
+      capture = JH.parseDuunitori(document, location.href);
+    } catch (e) {
+      // Tell the popup why instead of leaving it to guess; the page console has the stack.
+      console.error('[Job Hunter] could not read this ad', e);
+      send({ type: 'ad-error', url: location.href, error: String((e && e.message) || e) });
+      return;
+    }
+    send({ type: 'ad-viewed', capture });
   }
 
   if (document.visibilityState === 'visible') {

@@ -39,11 +39,26 @@ Open a Duunitori ad (`duunitori.fi/tyopaikat/tyo/<ad>`) in a tab you are looking
 | `↻` | decided, waiting for the backend (queued) |
 | `–` | known, but no score (e.g. no API key) |
 | `exp` | the ad has expired, not scored |
-| `?` | the ad could not be read completely, not scored |
+| `?` | the ad could not be read (or not completely), not scored; the popup says why |
 | `!` | backend unreachable or rejected the request |
 
 The popup shows the ad, score and reason, a banner ("Saved", "Already rejected"), Save / Reject / Undo
 buttons, "Score again" (re-scores, bypassing the cache) and a switch for automatic scoring.
+
+## When the popup can't read or score the ad
+
+The popup never asks you to reload (that would close it). If it opens on a Duunitori ad the extension has not
+read yet, it reads the ad itself, using the access the browser grants when you open it, and then scores it. If
+something fails it shows the actual reason:
+
+- **"Cannot reach the backend at …":** the backend is down, or the extension is not allowed to reach it. The popup
+  offers an **Allow access** button when the browser says the permission is missing. Firefox treats site access as
+  something you grant: if it persists, open about:addons → Job Hunter → Permissions and allow `jobs.test`.
+- **"Could not read the page: …":** the browser refused to let the extension into the tab. In Firefox, allow
+  `duunitori.fi` under the same Permissions tab. This also makes ads score automatically as you browse, without
+  opening the popup (Firefox does not run the extension's page scripts until that site access is granted).
+- **"Could not read this ad: …":** the page had an unexpected shape. Open the page's console (F12) and look for
+  `[Job Hunter] could not read this ad`; the message there includes the error.
 
 ## Saving and rejecting
 
@@ -72,6 +87,7 @@ the text the save stored.
 | `storage` | settings, per-tab state (session, in memory), the offline queue |
 | `activeTab` | the browsers only give an extension the current tab's URL after you open its popup or press its shortcut; the popup uses it to tell whether you are on an ad |
 | `alarms` | retry the offline queue |
+| `scripting` | read the ad in the open tab when you open the popup, if the browser has not already (no reload needed) |
 | `http://jobs.test/*` | talk to your local backend |
 | content script on `duunitori.fi/tyopaikat/tyo/*` | read the ad you are looking at |
 
@@ -85,14 +101,14 @@ npm run lint   # builds, then Mozilla's addons-linter on the Firefox build (exit
 The Duunitori fixture is **synthetic** (hand-written to match the markup the parser expects). Replace it with
 real snapshots once the extension can export them.
 
-Verified so far: all unit tests (including the real `background.js` loaded against a fake browser);
+Verified so far: all unit tests (including the real `background.js` loaded against a fake browser, and the parser against awkward JSON-LD shapes);
 `addons-linter` (0 errors; one warning about Firefox's `data_collection_permissions` key, deliberately
 not set); an end-to-end run of the Chrome build in a real Chrome against a stub backend (scoring, save, undo,
-reject, the popup's buttons, the offline queue and its replay, the registered shortcuts); Firefox 158 installs
-the build as a temporary add-on. **Not verified:** pressing the shortcuts and opening the real popup (headless
-Chrome can do neither; the same code paths are driven by messages and a patched `tabs.query`, so in particular
-the `activeTab` fix for tab URLs is untested), Firefox runtime behaviour, and a hidden background tab in a real
-browser (headless Chrome reports every tab as visible; jsdom tests cover it).
+reject, the popup's buttons, the offline queue and its replay, the registered shortcuts, reading an unread ad from the
+popup, the unreachable-backend and no-access messages); in Firefox 158 (isolated profile): on-demand reading, scoring,
+the offline state and the permission APIs. **Not verified:** pressing the shortcuts and clicking the real toolbar button (automation can do
+neither; the same code paths are driven by messages and a patched `tabs.query`, so in particular the `activeTab` grant
+that lets the popup read the tab is untested in a real popup), and a hidden background tab in a real Firefox.
 
 ## Layout
 

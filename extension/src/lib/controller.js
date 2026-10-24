@@ -11,9 +11,22 @@ const NEEDED_TO_SCORE = ['title', 'company', 'descriptionSnippet'];
 // A save or reject needs to know which ad it is; the description can be absent.
 const NEEDED_TO_DECIDE = ['title', 'company'];
 export const FLUSH_ALARM = 'flush-queue';
+// The scripts the manifest injects on ad pages, in order. scanTab() injects the same files on demand;
+// a test checks this list against the manifest so the two cannot drift apart.
+export const CONTENT_FILES = ['parsers/jsonld.js', 'parsers/duunitori.js', 'content/duunitori.js'];
 
 const keyOf = (tabId) => `tab:${tabId}`;
-const withoutHash = (url) => String(url || '').split('#')[0];
+// Same ad = same page address. The query string and fragment are ignored: a page can add tracking parameters or
+// rewrite its own URL after the content script has read it, which must not make its state "not this page".
+function samePage(a, b) {
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    return x.origin === y.origin && x.pathname.replace(/\/+$/, '') === y.pathname.replace(/\/+$/, '');
+  } catch (e) {
+    return String(a).split('#')[0] === String(b).split('#')[0];
+  }
+}
 const isUnreachable = (e) => e.kind === 'offline' || e.kind === 'timeout';
 const normalise = (r) => ({ id: r.id, status: r.status, fit_score: r.fit_score ?? null, fit_reason: r.fit_reason ?? null });
 // What a reject needs: which ad it was. No description, no raw capture.
@@ -125,6 +138,26 @@ export function createController({ api, backend, store, queue, getSettings }) {
       return score(tabId, base, { force: false });
     },
 
+    // The content script could not read the ad. Keep the reason so the popup can show it.
+    async onAdError(tabId, { url, error }) {
+      bump(tabId);
+      return setState(tabId, { url, status: 'unreadable', error });
+    },
+
+    // Read the ad in this tab now, by injecting the same scripts the manifest would have. Needs only the
+    // access the browser grants when the popup is opened (activeTab), so it works even when the page was
+    // loaded before the extension, or the browser did not inject the scripts for lack of site access.
+    async scanTab(tabId) {
+      try {
+        await api.scripting.executeScript({ target: { tabId }, files: CONTENT_FILES });
+        return { ok: true };
+      } catch (e) {
+        const error = `Could not read the page: ${(e && e.message) || e}`;
+        await setState(tabId, { url: '', status: 'unreadable', error });
+        return { ok: false, error };
+      }
+    },
+
     // Score an ad that was parsed but not scored (auto-scoring off), or score it again.
     async rescore(tabId, { force }) {
       const state = await store.get(keyOf(tabId));
@@ -195,7 +228,7 @@ export function createController({ api, backend, store, queue, getSettings }) {
     async getState(tabId, url) {
       const state = await store.get(keyOf(tabId));
       if (!state) return null;
-      if (url && withoutHash(state.url) !== withoutHash(url)) return null;
+      if (url && state.url && !samePage(state.url, url)) return null;
       return state.status === 'queued' ? { ...state, queueSize: await queue.size() } : state;
     },
 

@@ -37,11 +37,12 @@ export function fakeBackend(over = {}) {
   return backend;
 }
 
-export function setup({ settings = {}, backend = fakeBackend() } = {}) {
+export function setup({ settings = {}, backend = fakeBackend(), scriptingError = null } = {}) {
   const badges = []; // [tabId, text] in call order
   const session = new Map();
   const local = new Map();
   const alarms = { created: [], cleared: [] };
+  const scripts = []; // every scripting.executeScript call
   const area = (map) => ({
     get: async (key) => (map.has(key) ? { [key]: map.get(key) } : {}),
     set: async (obj) => Object.entries(obj).forEach(([k, v]) => map.set(k, v)),
@@ -56,11 +57,17 @@ export function setup({ settings = {}, backend = fakeBackend() } = {}) {
       create: async (name, info) => { alarms.created.push([name, info]); },
       clear: async (name) => { alarms.cleared.push(name); },
     },
+    scripting: {
+      executeScript: async (details) => {
+        scripts.push(details);
+        if (scriptingError) throw new Error(scriptingError);
+      },
+    },
   };
   const queue = createQueue(area(local));
   const controller = createController({
     api, backend, queue, store: createStore(area(session)),
     getSettings: async () => ({ ...DEFAULT_SETTINGS, ...settings }),
   });
-  return { controller, backend, queue, badges, session, local, alarms, calls: backend.calls };
+  return { controller, backend, queue, badges, session, local, alarms, scripts, calls: backend.calls };
 }

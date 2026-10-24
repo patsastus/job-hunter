@@ -21,6 +21,19 @@
 
   const clean = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
 
+  // Real pages vary: a field may be an array, a bare string, or missing. One odd field must cost us that
+  // field only, never the whole ad, so every extraction goes through these.
+  const first = (value) => (Array.isArray(value) ? value[0] : value);
+  const str = (value) => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '');
+  const attempt = (fn, fallback = '') => {
+    try {
+      const value = fn();
+      return value == null ? fallback : value;
+    } catch (e) {
+      return fallback;
+    }
+  };
+
   function domLocation(doc) {
     const container = doc.querySelector('.js-remove-leading-whitespace');
     if (!container) return '';
@@ -49,58 +62,64 @@
     now = now || new Date();
     const ld = JH.parseJsonLd(doc) || {};
 
-    let company = (ld.hiringOrganization && ld.hiringOrganization.name) || '';
+    let company = attempt(() => str(first(ld.hiringOrganization).name));
     if (!company || company === company.toLowerCase()) {
-      company = clean(doc.querySelector('p.header__info a[href*="/yritys/"]')) || company;
+      company = attempt(() => clean(doc.querySelector('p.header__info a[href*="/yritys/"]'))) || company;
     }
 
-    let location = '';
-    const loc = Array.isArray(ld.jobLocation) ? ld.jobLocation[0] : ld.jobLocation;
-    if (loc && loc.address) {
-      location = loc.address.addressLocality || loc.address.streetAddress || loc.address.addressRegion || '';
-    }
-    location = domLocation(doc) || location;
+    let location = attempt(() => {
+      const address = first(ld.jobLocation).address;
+      if (typeof address === 'string') return address;
+      return str(address.addressLocality) || str(address.streetAddress) || str(address.addressRegion);
+    });
+    location = attempt(() => domLocation(doc)) || location;
 
-    let published = ld.datePosted || '';
-    let deadline = ld.validThrough || '';
+    let published = str(ld.datePosted);
+    let deadline = str(ld.validThrough);
     if (!published || !deadline) {
-      for (const span of doc.querySelectorAll('p.header__info span')) {
-        const text = span.textContent.trim();
-        if (!published && text.startsWith('Julkaistu')) published = text.replace('Julkaistu', '').trim().replace(/\.$/, '');
-        if (!deadline && text.startsWith('Päättyy')) deadline = text.replace('Päättyy', '').trim().replace(/\.$/, '');
-      }
+      attempt(() => {
+        for (const span of doc.querySelectorAll('p.header__info span')) {
+          const text = span.textContent.trim();
+          if (!published && text.startsWith('Julkaistu')) published = text.replace('Julkaistu', '').trim().replace(/\.$/, '');
+          if (!deadline && text.startsWith('Päättyy')) deadline = text.replace('Päättyy', '').trim().replace(/\.$/, '');
+        }
+      });
     }
 
-    let jobType = '';
-    const employment = Array.isArray(ld.employmentType) ? ld.employmentType[0] : ld.employmentType;
-    if (employment) jobType = EMPLOYMENT_TYPES[employment] || employment;
+    const employment = str(first(ld.employmentType));
+    let jobType = employment ? EMPLOYMENT_TYPES[employment] || employment : '';
     if (!jobType) {
-      const found = [];
-      const header = Array.from(doc.querySelectorAll('p.header__info, .tag--info')).map(clean).join(' ');
-      for (const [label, re] of JOB_TYPE_WORDS) if (re.test(header)) found.push(label);
-      jobType = found.join(', ');
+      jobType = attempt(() => {
+        const header = Array.from(doc.querySelectorAll('p.header__info, .tag--info')).map(clean).join(' ');
+        return JOB_TYPE_WORDS.filter(([, re]) => re.test(header)).map(([label]) => label).join(', ');
+      });
     }
 
-    let industry = '';
-    for (const block of doc.querySelectorAll('.info-listing__block')) {
-      const heading = block.querySelector('.info-listing__heading');
-      if (heading && heading.textContent.trim() === 'Toimiala') industry = clean(block.querySelector('.info-listing__value'));
-    }
+    const industry = attempt(() => {
+      for (const block of doc.querySelectorAll('.info-listing__block')) {
+        const heading = block.querySelector('.info-listing__heading');
+        if (heading && heading.textContent.trim() === 'Toimiala') return clean(block.querySelector('.info-listing__value'));
+      }
+      return '';
+    });
 
-    let description = ld.description ? JH.htmlToText(ld.description, doc) : '';
+    let description = attempt(() => (typeof ld.description === 'string' ? JH.htmlToText(ld.description, doc) : ''));
     if (description.length < 50) {
-      const box = doc.querySelector('.description--jobentry');
-      if (box) description = JH.htmlToText(box.innerHTML, doc);
+      description = attempt(() => {
+        const box = doc.querySelector('.description--jobentry');
+        return box ? JH.htmlToText(box.innerHTML, doc) : description;
+      });
     }
 
-    let applyUrl = '';
-    const apply = doc.querySelector('a.apply--button, a.js-jobentry-apply');
-    const href = apply && apply.getAttribute('href');
-    if (href) applyUrl = href.startsWith('http') ? href : url.split('#')[0] + (href.startsWith('#') ? href : '/' + href);
+    const applyUrl = attempt(() => {
+      const href = doc.querySelector('a.apply--button, a.js-jobentry-apply').getAttribute('href');
+      if (!href) return '';
+      return href.startsWith('http') ? href : url.split('#')[0] + (href.startsWith('#') ? href : '/' + href);
+    });
 
     const { description: _html, ...ldWithoutBody } = ld; // the HTML body duplicates descriptionSnippet
     const job = {
-      title: ld.title || clean(doc.querySelector('h1')),
+      title: str(ld.title) || attempt(() => clean(doc.querySelector('h1'))),
       company,
       location,
       published,
@@ -108,7 +127,7 @@
       descriptionSnippet: description,
       url,
       source: 'extension',
-      salary: clean(doc.querySelector('.tag--salary')),
+      salary: attempt(() => clean(doc.querySelector('.tag--salary'))),
       jobType,
       industry,
       applyUrl,
@@ -117,6 +136,6 @@
 
     const missing = REQUIRED.filter((f) => !job[f]);
     if (job.descriptionSnippet && job.descriptionSnippet.length < MIN_DESCRIPTION_CHARS) missing.push('fullDescription');
-    return { job, quality: { missing }, expired: isPast(ld.validThrough, now) };
+    return { job, quality: { missing }, expired: isPast(str(ld.validThrough), now) };
   };
 })(globalThis);

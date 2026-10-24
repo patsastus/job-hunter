@@ -19,8 +19,8 @@ test('the two manifests differ only where the browsers differ', async () => {
 test('permissions stay minimal: what each feature needs, the backend, and Duunitori ad pages', async () => {
   const m = await buildManifest('chrome');
   // storage: settings, tab state, queue. activeTab: the tab URL when you open the popup or press a shortcut.
-  // alarms: retry queued decisions.
-  assert.deepEqual(m.permissions, ['storage', 'activeTab', 'alarms']);
+  // alarms: retry queued decisions. scripting: read the ad in the open tab on demand (scan-tab).
+  assert.deepEqual(m.permissions, ['storage', 'activeTab', 'alarms', 'scripting']);
   assert.deepEqual(m.host_permissions, ['http://jobs.test/*']);
   for (const cs of m.content_scripts) for (const pattern of cs.matches) assert.match(pattern, /duunitori\.fi\/tyopaikat\/tyo\/\*$/);
 });
@@ -46,4 +46,10 @@ test('both shortcuts are declared, and the names match what the background worke
   assert.equal(m.commands['reject-job'].suggested_key.default, 'Alt+Shift+X');
   const background = readFileSync(new URL('../src/background.js', import.meta.url), 'utf8');
   for (const name of Object.keys(m.commands)) assert.ok(background.includes(`'${name}'`), `${name} is not handled in background.js`);
+});
+
+test('the scripts scanTab() injects are exactly the ones the manifest injects', async () => {
+  const { CONTENT_FILES } = await import('../src/lib/controller.js');
+  const m = await buildManifest('chrome');
+  assert.deepEqual(CONTENT_FILES, m.content_scripts[0].js);
 });

@@ -22,6 +22,7 @@ export function badgeFor(state) {
     case 'expired':
       return { text: 'exp', color: GREY };
     case 'incomplete':
+    case 'unreadable':
       return { text: '?', color: AMBER };
     case 'offline':
     case 'error':

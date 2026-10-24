@@ -34,6 +34,9 @@ globalThis.chrome = {
   },
 };
 
+const injected = [];
+globalThis.chrome.scripting = { executeScript: async (details) => { injected.push(details); } };
+
 const requests = [];
 globalThis.fetch = async (url, init) => {
   requests.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : null });
@@ -108,4 +111,19 @@ test('the retry alarm and browser startup flush the queue; other alarms do not',
 test('closing a tab clears its state', async () => {
   await listeners.tabRemoved[0](4);
   assert.equal(await send({ type: 'get-state', tabId: 4 }, {}), null);
+});
+
+test('ad-error and scan-tab messages are routed', async () => {
+  assert.equal(await send({ type: 'ad-error', url: URL1, error: 'boom' }, {}), null, 'ignored without a sending tab');
+  await send({ type: 'ad-error', url: URL1, error: 'boom' }, { tab: { id: 6 } });
+  const state = await send({ type: 'get-state', tabId: 6, url: URL1 }, {});
+  assert.deepEqual([state.status, state.error], ['unreadable', 'boom']);
+  assert.deepEqual(await send({ type: 'scan-tab', tabId: 6 }, {}), { ok: true });
+  assert.deepEqual(injected.at(-1), { target: { tabId: 6 }, files: ['parsers/jsonld.js', 'parsers/duunitori.js', 'content/duunitori.js'] });
+});
+
+test('a handler that throws is reported as a failure, which the popup can tell apart from a state', async () => {
+  const reply = await send({ type: 'ad-viewed', capture: null }, { tab: { id: 8 } }); // capture.job on null
+  assert.equal(typeof reply.failure, 'string');
+  assert.equal('error' in reply, false, 'states such as "offline" use `error`; the failure envelope must not');
 });

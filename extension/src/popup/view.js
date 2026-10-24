@@ -20,6 +20,10 @@ const DECISIONS = {
 };
 const LABELS = { save: 'Save', reject: 'Reject', undo: 'Undo', rescore: 'Score again' };
 
+const GAVE_UP =
+  'Nothing came back from the page. In Firefox, open about:addons → Job Hunter → Permissions and allow ' +
+  'access to duunitori.fi, then try again.';
+
 function headingOf(state) {
   const job = state.capture.job;
   return { title: job.title, company: job.company, location: job.location, deadline: job.deadline };
@@ -42,11 +46,25 @@ function bannerFor(state) {
   return '';
 }
 
-export function viewFor(state, tabUrl) {
+// Turn the background's reply to get-state into something to render. A reply with `failure` means the
+// background itself broke; any other object is a state, including ones that carry an `error` of their own
+// (offline, error, unreadable), which must be shown rather than mistaken for a failed request.
+export function readReply(reply) {
+  if (reply && reply.failure) return { state: null, failure: reply.failure };
+  return { state: reply || null, failure: null };
+}
+
+// `gaveUp` is set by the popup after it has asked the page to be read (scan-tab) and waited without an answer.
+export function viewFor(state, tabUrl, { gaveUp = false } = {}) {
   if (!state) {
-    return AD_URL.test(tabUrl || '')
-      ? { kind: 'waiting', message: 'Reload this page so the extension can read the ad.' }
-      : { kind: 'not-ad', message: 'Open a Duunitori job ad to see how well it fits you.' };
+    if (!AD_URL.test(tabUrl || '')) return { kind: 'not-ad', message: 'Open a Duunitori job ad to see how well it fits you.' };
+    return gaveUp
+      ? { kind: 'waiting', message: GAVE_UP, actions: [{ id: 'scan-tab', label: 'Try again' }] }
+      : { kind: 'waiting', message: 'Reading the ad…', actions: [] };
+  }
+  if (state.status === 'unreadable') {
+    const reason = /^Could not/.test(state.error) ? state.error : `Could not read this ad: ${state.error}`;
+    return { kind: 'unreadable', message: reason, actions: [{ id: 'scan-tab', label: 'Try again' }], notice: '' };
   }
   const view = { kind: state.status, heading: headingOf(state), actions: [], notice: state.notice || '' };
   switch (state.status) {
@@ -91,7 +109,7 @@ export function viewFor(state, tabUrl) {
       break;
     }
     case 'offline':
-      view.message = `${state.error} Is the backend running?`;
+      view.message = `${state.error} Is the backend running? In Firefox, also check that the extension is allowed to access it (about:addons → Job Hunter → Permissions).`;
       view.actions.push(...decisionActions(state), { id: 'rescore', label: 'Try again' });
       break;
     case 'error':

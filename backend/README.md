@@ -56,6 +56,20 @@ uv run python cleanup.py --apply               # back up to ~/backups/, then do 
 - It refuses to run when it cannot find `jobs.db` rather than creating an empty one, so run it from the `backend`
   folder of the checkout that holds the database (or set `DATABASE_URL`).
 
+## Re-scoring saved jobs
+
+Every stored score carries `scored_with`, the version of the profile (distilled profile or raw documents, plus the
+prompt) that produced it. After the profile changes, saved jobs can be refreshed in one go:
+
+- `GET /api/profile/rescore`: how many saved jobs are stale (`to_rescore`), how many cannot be re-scored because no ad text
+  is stored (`no_text`), how many only have a shortened text (`short_text`), the model's pause between calls and an estimate.
+- `POST /api/profile/rescore`: start a background run (202), one at a time (409 if running, or nothing to do). Progress goes
+  out on the `/api/jobs/score-stream` events (`state`, `job_scored`, `done`, with `failed` and `stopped`).
+
+Only `saved` jobs are touched. A failed call never changes a stored score. The pause follows the model (flash-lite 4.1 s,
+flash 12.5 s, gemma 2.1 s, others 6 s); a rate-limit answer waits 60 s and retries once; three failures in a row stop the
+run; saving the profile mid-run stops it (a run is for one profile version). Logic is in `rescore.py`.
+
 ## Docker
 
 The image's environment lives in `/opt/venv`, outside `/app`, because compose bind-mounts `./backend` over

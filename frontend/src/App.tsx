@@ -61,7 +61,23 @@ interface ScoringProgress {
   isRunning: boolean;
   total: number;
   completed: number;
+  failed?: number;
+  stopped?: string | null;
   currentJob: string;
+}
+
+// What the "Re-score saved jobs" button needs to know (GET /api/profile/rescore).
+interface RescoreStatus {
+  scoring_with: 'distilled' | 'raw' | null;
+  saved_total: number;
+  current: number;        // saved jobs already scored with the current profile
+  to_rescore: number;     // saved jobs a run would score
+  no_text: number;        // saved jobs that are stale but have no stored ad text
+  short_text: number;     // of to_rescore: only a shortened ad text is stored
+  model: string;
+  interval_seconds: number;
+  estimated_seconds: number;
+  running: boolean;
 }
 
 function App() {
@@ -75,10 +91,10 @@ function App() {
     currentJob: ''
   });
 
-  // Keyword Management State
-  const [keywords, setKeywords] = useState<{id: number, word: string}[]>([]);
-  const [newKw, setNewKw] = useState("");
-  
+  // Re-scoring saved jobs after the profile changes
+  const [rescore, setRescore] = useState<RescoreStatus | null>(null);
+  const [rescoreMsg, setRescoreMsg] = useState("");
+
   // Profile Document State
   const [documents, setDocuments] = useState<{id: number, title: string, content: string}[]>([]);
   const [newDocTitle, setNewDocTitle] = useState("");
@@ -98,16 +114,16 @@ function App() {
 
   const fetchData = async () => {
     try {
-      const [jobRes, kwRes, docRes, setRes, profRes] = await Promise.all([
+      const [jobRes, docRes, setRes, profRes, rescoreRes] = await Promise.all([
         fetch('/api/jobs'),
-        fetch('/api/keywords'),
         fetch('/api/documents'),
         fetch('/api/settings'),
-        fetch('/api/profile/distilled')
+        fetch('/api/profile/distilled'),
+        fetch('/api/profile/rescore')
       ]);
       setJobs(await jobRes.json());
-      setKeywords(await kwRes.json());
       setDocuments(await docRes.json());
+      setRescore(await rescoreRes.json());
       setSettings(await setRes.json());
       const profile: DistilledStatus = await profRes.json();
       setDistilled(profile);
@@ -139,6 +155,7 @@ function App() {
           isRunning: true,
           total: data.total,
           completed: data.completed,
+          failed: data.failed,
           currentJob: data.currentJob
         });
         if (data.job) {
@@ -156,9 +173,11 @@ function App() {
           isRunning: false,
           total: data.total,
           completed: data.completed,
+          failed: data.failed,
+          stopped: data.stopped,
           currentJob: ''
         });
-        fetchData();
+        fetchData(); // also refreshes the re-score button
       } catch (err) {
         console.error('Error parsing SSE done:', err);
       }
@@ -451,31 +470,6 @@ function App() {
     }
   };
 
-  const addKeyword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newKw.trim()) return;
-    try {
-      await fetch('/api/keywords', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word: newKw.trim() })
-      });
-      setNewKw("");
-      fetchData();
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const deleteKeyword = async (id: number) => {
-    try {
-      await fetch(`/api/keywords/${id}`, { method: 'DELETE' });
-      fetchData();
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
   const addDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newDocTitle.trim() || !newDocContent.trim()) return;
@@ -544,7 +538,10 @@ function App() {
       distilledDirty.current = false;
       setDistilled(data);
       setDistilledText(data.content);
-      setDistilledMsg('Saved. Scores made with an older profile are re-scored when you next view those ads.');
+      const status = await refreshRescoreStatus();
+      setDistilledMsg(status && status.to_rescore > 0
+        ? `Saved. ${status.to_rescore} saved job${status.to_rescore === 1 ? ' was' : 's were'} scored with an older profile: re-score ${status.to_rescore === 1 ? 'it' : 'them'} below.`
+        : 'Saved.');
     } catch (e) {
       console.error(e);
       setDistilledMsg('Could not reach the backend.');
@@ -562,7 +559,10 @@ function App() {
       distilledDirty.current = false;
       setDistilled(data);
       setDistilledText("");
-      setDistilledMsg('Deleted. Scoring uses your full documents.');
+      const status = await refreshRescoreStatus();
+      setDistilledMsg(status && status.to_rescore > 0
+        ? `Deleted. Scoring uses your full documents again. ${status.to_rescore} saved job${status.to_rescore === 1 ? '' : 's'} can be re-scored below.`
+        : 'Deleted. Scoring uses your full documents.');
     } catch (e) {
       console.error(e);
       setDistilledMsg('Could not reach the backend.');
@@ -664,12 +664,30 @@ function App() {
     </div>
   )};
 
-  const scoreAllJobs = async () => {
+  const refreshRescoreStatus = async (): Promise<RescoreStatus | null> => {
     try {
-      await fetch('/api/jobs/score-all', { method: 'POST' });
+      const status: RescoreStatus = await (await fetch('/api/profile/rescore')).json();
+      setRescore(status);
+      return status;
     } catch (e) {
       console.error(e);
+      return null;
     }
+  };
+
+  const startRescore = async () => {
+    setRescoreMsg('');
+    try {
+      const res = await fetch('/api/profile/rescore', { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setRescoreMsg(typeof data.detail === 'string' ? data.detail : 'Could not start the re-score.');
+      }
+    } catch (e) {
+      console.error(e);
+      setRescoreMsg('Could not reach the backend.');
+    }
+    refreshRescoreStatus(); // the progress itself arrives on the live stream
   };
 
   const percent = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
@@ -696,19 +714,6 @@ function App() {
             />
           </div>
           <div style={{display: 'flex', gap: '0.75rem', alignItems: 'center'}}>
-            <button 
-              className="btn outline" 
-              style={{
-                color: 'white', 
-                borderColor: 'white',
-                opacity: progress.isRunning ? 0.7 : 1,
-                cursor: progress.isRunning ? 'not-allowed' : 'pointer'
-              }} 
-              disabled={progress.isRunning}
-              onClick={scoreAllJobs}
-            >
-              {progress.isRunning ? '⏳ Scoring in progress...' : '🤖 Score All Inbox'}
-            </button>
             <button className="btn outline" style={{color: 'white', borderColor: 'white'}} onClick={() => setShowSettings(!showSettings)}>
               {showSettings ? 'Close Settings' : 'Settings'}
             </button>
@@ -725,10 +730,11 @@ function App() {
           }}>
             <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem', fontSize: '0.9rem'}}>
               <span>
-                Evaluating: <strong>{progress.currentJob || 'Starting next job...'}</strong>
+                Re-scoring saved jobs: <strong>{progress.currentJob || 'Starting next job...'}</strong>
               </span>
               <span>
                 <strong>{progress.completed}</strong> / {progress.total} ({percent}%)
+                {!!progress.failed && <span> · {progress.failed} failed</span>}
               </span>
             </div>
             <div style={{
@@ -788,29 +794,6 @@ function App() {
                 </div>
               </div>
 
-              <div>
-                <h3>Scraper Keywords</h3>
-                <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>These keywords are used by the auto-scraper.</p>
-                <div className="kw-list" style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
-                  {keywords.length === 0 && <span style={{fontSize: '0.85rem'}}>Using defaults (developer, python, go, etc.)</span>}
-                  {keywords.map(k => (
-                    <span key={k.id} className="kw-tag" style={{background: '#dfe1e6', padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.85rem'}}>
-                      {k.word} <button style={{border: 'none', background: 'none', cursor: 'pointer'}} onClick={() => deleteKeyword(k.id)}>×</button>
-                    </span>
-                  ))}
-                </div>
-                <form onSubmit={addKeyword} style={{marginTop: '0.5rem', display: 'flex', gap: '0.5rem'}}>
-                  <input 
-                    type="text" 
-                    value={newKw} 
-                    onChange={(e) => setNewKw(e.target.value)} 
-                    placeholder="e.g. rust"
-                    style={{padding: '0.3rem', borderRadius: '4px', border: '1px solid #dfe1e6', flex: 1}}
-                  />
-                  <button type="submit" className="btn save" style={{padding: '0.3rem 0.6rem'}}>Add</button>
-                </form>
-              </div>
-
             </div>
 
             <div style={{flex: 2}}>
@@ -843,7 +826,7 @@ function App() {
                 <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>
                   A short version of the documents above, so each score reads about 500 words instead of the whole CV.
                   Generate a draft, then edit it and state your preferences and dealbreakers. When saved, scoring uses this
-                  instead of the full documents. Saving a change marks older scores stale; they are re-scored when you next view those ads.
+                  instead of the full documents. Saving a change marks older scores stale: re-score your saved jobs with the button below, or each one refreshes when you next view its ad.
                 </p>
                 <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>
                   Scoring with: <strong>{distilled?.scoring_with === 'distilled' ? 'distilled profile' : distilled?.scoring_with === 'raw' ? 'full documents' : 'nothing (add a document first)'}</strong>
@@ -869,6 +852,59 @@ function App() {
                   <span style={{fontSize: '0.8rem', color: '#5e6c84'}}>{distilledText.length} / {distilled?.max_chars ?? 6000}</span>
                 </div>
                 {distilledMsg && <p style={{fontSize: '0.85rem', marginTop: '0.5rem'}}>{distilledMsg}</p>}
+              </div>
+
+              <div style={{marginTop: '1.5rem'}}>
+                <h3>Re-score saved jobs</h3>
+                {!rescore || rescore.scoring_with === null ? (
+                  <p style={{fontSize: '0.85rem'}}>Add a profile document first: scores need a profile to compare jobs against.</p>
+                ) : (
+                  <>
+                    <p style={{fontSize: '0.85rem', marginBottom: '0.5rem'}}>
+                      {rescore.to_rescore === 0 && rescore.no_text === 0
+                        ? `All ${rescore.saved_total} saved jobs are scored with the current profile.`
+                        : `${rescore.saved_total - rescore.current} of ${rescore.saved_total} saved jobs were scored with an older profile, or not at all.`}
+                      {' '}Applied, rejected and viewed-only jobs keep their scores.
+                    </p>
+                    <div style={{display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap'}}>
+                      <button
+                        type="button"
+                        className="btn save"
+                        disabled={progress.isRunning || rescore.running || rescore.to_rescore === 0}
+                        onClick={startRescore}
+                        style={{padding: '0.3rem 0.8rem'}}
+                      >
+                        {progress.isRunning || rescore.running
+                          ? 'Re-scoring…'
+                          : `Re-score ${rescore.to_rescore} saved job${rescore.to_rescore === 1 ? '' : 's'}`}
+                      </button>
+                      {rescore.to_rescore > 0 && !progress.isRunning && (
+                        <span style={{fontSize: '0.8rem', color: '#5e6c84'}}>
+                          about {Math.max(1, Math.ceil(rescore.estimated_seconds / 60))} min ({rescore.model} allows one call every {rescore.interval_seconds}s)
+                        </span>
+                      )}
+                    </div>
+                    {rescore.short_text > 0 && (
+                      <p style={{fontSize: '0.8rem', color: '#5e6c84', marginTop: '0.5rem'}}>
+                        {rescore.short_text} of these only have a shortened ad text (the old scraper cut ads at 800 characters), so their new score is rougher. Open the ad with the extension to score it from the full text.
+                      </p>
+                    )}
+                    {rescore.no_text > 0 && (
+                      <p style={{fontSize: '0.8rem', color: '#5e6c84', marginTop: '0.5rem'}}>
+                        {rescore.no_text} stale job{rescore.no_text === 1 ? ' has' : 's have'} no stored ad text and cannot be re-scored here: open {rescore.no_text === 1 ? 'it' : 'them'} with the extension.
+                      </p>
+                    )}
+                  </>
+                )}
+                {!progress.isRunning && !!progress.failed && (
+                  <p style={{fontSize: '0.85rem', marginTop: '0.5rem'}}>
+                    The last run could not score {progress.failed} job{progress.failed === 1 ? '' : 's'}; {progress.failed === 1 ? 'it keeps' : 'they keep'} the previous score and can be retried.
+                  </p>
+                )}
+                {!progress.isRunning && progress.stopped && (
+                  <p style={{fontSize: '0.85rem', marginTop: '0.5rem', color: '#bf2600'}}>{progress.stopped}</p>
+                )}
+                {rescoreMsg && <p style={{fontSize: '0.85rem', marginTop: '0.5rem', color: '#bf2600'}}>{rescoreMsg}</p>}
               </div>
             </div>
           </div>

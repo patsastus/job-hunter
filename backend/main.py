@@ -16,6 +16,7 @@ from datetime import datetime
 
 import ingest
 import llm
+import rescore
 import migrate
 import models
 import profile
@@ -425,8 +426,11 @@ scoring_state = {
     "is_running": False,
     "total": 0,
     "completed": 0,
+    "failed": 0,
+    "stopped": None,
     "current_job": ""
 }
+rescore_lock = threading.Lock()  # claiming "a re-score is running" must be atomic
 subscribers: list[asyncio.Queue] = []
 main_loop = None
 
@@ -442,81 +446,33 @@ def broadcast_event(event_type: str, data: dict):
         except Exception:
             pass
 
-def background_batch_scorer():
-    global scoring_state
-    db = SessionLocal()
-    try:
-        unscored_jobs = db.query(models.Job).filter(models.Job.fit_score == None, models.Job.status == 'new').all()
-        scoring_state["is_running"] = True
-        scoring_state["total"] = len(unscored_jobs)
-        scoring_state["completed"] = 0
-        scoring_state["current_job"] = ""
+# Re-scoring saved jobs with the current profile (see rescore.py). Progress is published on the stream below.
+@app.get("/api/profile/rescore")
+def rescore_status(db: Session = Depends(get_db)):
+    """How many saved jobs were scored with an older profile, and whether a re-score is running."""
+    return {**rescore.status(db, llm.get_settings(db).model), "running": scoring_state["is_running"]}
 
-        broadcast_event("state", {
-            "isRunning": True,
-            "total": scoring_state["total"],
-            "completed": 0,
-            "currentJob": "Starting..."
-        })
-
-        for job in unscored_jobs:
-            # Re-fetch inside loop to ensure we have latest state
-            job_to_score = db.query(models.Job).filter(models.Job.id == job.id).first()
-            if job_to_score and job_to_score.fit_score is None:
-                scoring_state["current_job"] = job_to_score.title
-                broadcast_event("state", {
-                    "isRunning": True,
-                    "total": scoring_state["total"],
-                    "completed": scoring_state["completed"],
-                    "currentJob": job_to_score.title
-                })
-
-                run_ai_scorer(job_to_score, db)
-                db.refresh(job_to_score)
-                scoring_state["completed"] += 1
-
-                job_data = {
-                    "id": job_to_score.id,
-                    "title": job_to_score.title,
-                    "company": job_to_score.company,
-                    "location": job_to_score.location,
-                    "published": job_to_score.published,
-                    "deadline": job_to_score.deadline,
-                    "descriptionSnippet": job_to_score.description_snippet,
-                    "url": job_to_score.url,
-                    "status": job_to_score.status,
-                    "fit_score": job_to_score.fit_score,
-                    "fit_reason": job_to_score.fit_reason,
-                    "source": job_to_score.source
-                }
-                broadcast_event("job_scored", {
-                    "isRunning": True,
-                    "total": scoring_state["total"],
-                    "completed": scoring_state["completed"],
-                    "currentJob": job_to_score.title,
-                    "job": job_data
-                })
-
-                # Sleep 4.1 seconds to stay under Gemini's 15 Requests Per Minute limit (1 req / 4s = 15 RPM)
-                time.sleep(4.1)
-    finally:
-        scoring_state["is_running"] = False
-        scoring_state["current_job"] = ""
-        broadcast_event("done", {
-            "isRunning": False,
-            "total": scoring_state["total"],
-            "completed": scoring_state["completed"],
-            "currentJob": ""
-        })
-        db.close()
-
-@app.post("/api/jobs/score-all")
-def score_all_jobs():
-    if scoring_state["is_running"]:
-        return {"status": "Batch scoring is already running."}
-    thread = threading.Thread(target=background_batch_scorer, daemon=True)
-    thread.start()
-    return {"status": "Batch scoring started."}
+@app.post("/api/profile/rescore", status_code=202)
+def start_rescore(db: Session = Depends(get_db)):
+    """Start re-scoring the saved jobs that are not scored with the current profile. One run at a time."""
+    with rescore_lock:
+        if scoring_state["is_running"]:
+            raise HTTPException(status_code=409, detail="A re-score is already running.")
+        ids, version = rescore.eligible_ids(db)
+        if version is None:
+            raise HTTPException(status_code=409, detail="There is no profile to score with. Add a profile document first.")
+        if not ids:
+            raise HTTPException(status_code=409, detail="Every saved job that has a stored ad text is already scored with the current profile.")
+        scoring_state.update(is_running=True, total=len(ids), completed=0, failed=0, stopped=None, current_job="")  # claim it
+    interval = rescore.interval_for(llm.get_settings(db).model)
+    threading.Thread(
+        target=rescore.run_rescore,
+        args=(ids, version),
+        kwargs=dict(session_factory=SessionLocal, compute=lambda *a: compute_fit(*a), interval=interval,
+                    emit=broadcast_event, state=scoring_state),
+        daemon=True,
+    ).start()
+    return {"status": "started", "total": len(ids), "interval_seconds": interval}
 
 @app.get("/api/jobs/score-stream")
 async def score_stream(request: Request):
@@ -530,12 +486,7 @@ async def score_stream(request: Request):
     async def event_generator():
         try:
             # Send current state immediately upon client connection
-            initial_event = {
-                "isRunning": scoring_state["is_running"],
-                "total": scoring_state["total"],
-                "completed": scoring_state["completed"],
-                "currentJob": scoring_state["current_job"]
-            }
+            initial_event = rescore.snapshot(scoring_state)
             yield f"event: state\ndata: {json.dumps(initial_event)}\n\n"
 
             while True:

@@ -243,14 +243,6 @@ def test_lookup_caps_batch_size(client):
 
 # --- seen rows stay out of the old flows -----------------------------------------------------
 
-def test_batch_scorer_ignores_seen_rows(db, monkeypatch):
-    ingest.record_seen(db, ingest.JobIn(**ad()))  # unscored seen row
-    new = ingest.ingest(db, ingest.JobIn(**ad(title="Other", company="Beta", url="https://x.test/2"))).job
-    scored = []
-    monkeypatch.setattr(main, "run_ai_scorer", lambda job, session: scored.append(job.id))
-    monkeypatch.setattr(main.time, "sleep", lambda s: None)
-    main.background_batch_scorer()
-    assert scored == [new.id]
 
 
 def test_preview_can_record_without_scoring(client, db, llm):

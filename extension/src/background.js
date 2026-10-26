@@ -7,9 +7,10 @@ import { createQueue } from './lib/queue.js';
 import { createSettings } from './lib/settings.js';
 
 const settings = createSettings(api.storage.local);
+const backend = createBackend({ getBaseUrl: async () => (await settings.get()).backendUrl });
 const controller = createController({
   api,
-  backend: createBackend({ getBaseUrl: async () => (await settings.get()).backendUrl }),
+  backend,
   store: createStore(api.storage.session),
   queue: createQueue(api.storage.local),
   getSettings: () => settings.get(),
@@ -23,6 +24,12 @@ async function handle(message, sender) {
     case 'ad-error':
       if (!sender.tab) return null;
       return controller.onAdError(sender.tab.id, { url: message.url, error: message.error });
+    case 'lookup': {
+      // Duunitori list pages ask which of the listed ads are already known. The backend caps one request at 200.
+      if (!sender.tab || !Array.isArray(message.urls)) return null;
+      const urls = message.urls.filter((u) => typeof u === 'string').slice(0, 200);
+      return { items: urls.length ? await backend.lookup(urls) : [] };
+    }
     case 'scan-tab':
       return controller.scanTab(message.tabId, message.url);
     case 'edit':

@@ -39,7 +39,7 @@ test('the generic reader is never injected automatically', async () => {
   for (const target of ['chrome', 'firefox']) {
     const m = await buildManifest(target);
     const injected = m.content_scripts.flatMap((c) => c.js);
-    assert.deepEqual(injected, DUUNITORI_FILES);
+    assert.deepEqual(injected, [...DUUNITORI_FILES, 'content/duunitori-list.js']);
     assert.ok(!injected.some((f) => f.includes('generic')));
     assert.ok(m.content_scripts.every((c) => c.matches.every((p) => /duunitori\.fi/.test(p))));
   }

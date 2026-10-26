@@ -41,7 +41,7 @@ const requests = [];
 globalThis.fetch = async (url, init) => {
   requests.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : null });
   const sent = init.body ? JSON.parse(init.body) : {};
-  const body = url.endsWith('/api/jobs') ? { id: 1, status: 'saved' } : url.includes('/api/jobs/') ? { id: 1, status: sent.status } : preview();
+  const body = url.endsWith('/api/jobs/lookup') ? (sent.urls || []).map((u) => ({ url: u, status: u.endsWith('-1') ? 'saved' : null, fit_score: u.endsWith('-1') ? 80 : null })) : url.endsWith('/api/jobs') ? { id: 1, status: 'saved' } : url.includes('/api/jobs/') ? { id: 1, status: sent.status } : preview();
   return { ok: true, status: 200, json: async () => body };
 };
 
@@ -143,4 +143,19 @@ test('the save shortcut on a tab with nothing read yet reads it with the reader 
   assert.deepEqual(ad.files, [[22, ['parsers/jsonld.js', 'parsers/duunitori.js', 'content/duunitori.js']]]);
   const blank = await run({ id: 23, url: 'about:blank' });
   assert.deepEqual(blank.files, [], 'nothing is injected into pages that cannot be read');
+});
+
+test('list pages ask which ads are known: answered for a tab, capped at 200, ignored without a sending tab', async () => {
+  const urls = ['https://duunitori.fi/tyopaikat/tyo/a-1', 'https://duunitori.fi/tyopaikat/tyo/b-2'];
+  const reply = await send({ type: 'lookup', urls }, { tab: { id: 30 } });
+  assert.deepEqual(reply.items.map((i) => [i.url, i.status]), [[urls[0], 'saved'], [urls[1], null]]);
+  assert.deepEqual([requests.at(-1).method, requests.at(-1).url], ['POST', 'http://jobs.test/api/jobs/lookup']);
+  const many = Array.from({ length: 250 }, (_, i) => `https://duunitori.fi/tyopaikat/tyo/ad-${i}`);
+  await send({ type: 'lookup', urls: many }, { tab: { id: 30 } });
+  assert.equal(requests.at(-1).body.urls.length, 200);
+  const before = requests.length;
+  assert.equal(await send({ type: 'lookup', urls }, {}), null);
+  assert.equal(await send({ type: 'lookup', urls: 'nope' }, { tab: { id: 30 } }), null);
+  assert.deepEqual(await send({ type: 'lookup', urls: [] }, { tab: { id: 30 } }), { items: [] });
+  assert.equal(requests.length, before, 'nothing is sent for those');
 });

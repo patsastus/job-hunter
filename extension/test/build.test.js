@@ -22,7 +22,12 @@ test('permissions stay minimal: what each feature needs, the backend, and Duunit
   // alarms: retry queued decisions. scripting: read the ad in the open tab on demand (scan-tab).
   assert.deepEqual(m.permissions, ['storage', 'activeTab', 'alarms', 'scripting']);
   assert.deepEqual(m.host_permissions, ['http://jobs.test/*']);
-  for (const cs of m.content_scripts) for (const pattern of cs.matches) assert.match(pattern, /duunitori\.fi\/tyopaikat\/tyo\/\*$/);
+  // Ad pages get the reader; the list pages (/tyopaikat...) get the highlighter, which only asks the local backend.
+  const [ads, lists] = m.content_scripts;
+  for (const pattern of ads.matches) assert.match(pattern, /duunitori\.fi\/tyopaikat\/tyo\/\*$/);
+  for (const pattern of lists.matches) assert.match(pattern, /^\*:\/\/(www\.)?duunitori\.fi\/tyopaikat\*$/);
+  assert.deepEqual(lists.js, ['content/duunitori-list.js']);
+  assert.equal(m.content_scripts.length, 2);
 });
 
 test('build writes both targets and every file the manifest names exists', async () => {

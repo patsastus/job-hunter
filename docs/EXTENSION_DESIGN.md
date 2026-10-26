@@ -14,7 +14,8 @@ Everything else (ranking, triage, applications) reads from what these produce.
 - **No automated collection.** Duunitori's terms forbid scraping or systematically copying content, and
   its `robots.txt` disallows automated access. The extension therefore never makes requests to job
   sites, never opens pages, follows links, paginates or reads result lists to harvest them. It only
-  works on the page the user has open and looking at.
+  works on the page the user has open and looking at. Marking the ads you already know on a list you are reading
+  is not harvesting: it compares the page's links with your own database and sends nothing to the site or anywhere else.
 - **Text is processed, not stored, until you save.** Scoring sends the ad text to the backend and the
   scoring LLM, then discards it. What is kept for an ad you only viewed is derived data: URL, title,
   company, location, dates, score and reason (a `seen` record). The description and raw capture are stored
@@ -116,8 +117,9 @@ The worker holds no in-memory state across events: save queue, settings and per-
 
 ### Permissions
 
-- Content script: `*://duunitori.fi/tyopaikat/tyo/*` only (ad pages), plus the list pages for
-  highlighting in a later phase.
+- Content scripts: `*://duunitori.fi/tyopaikat/tyo/*` (ad pages, the reader) and `*://duunitori.fi/tyopaikat*` (list
+  pages, the highlighter; it does nothing on a single ad). The highlighter reads only the links of the open page and
+  sends their addresses to the local backend's lookup endpoint. It makes no request to the site and keeps nothing.
 - Host permission for the backend (`jobs.test`).
 - `activeTab` + `scripting` for manual capture on other sites (LinkedIn, generic), so those pages are
   only touched when you press the shortcut.
@@ -172,6 +174,6 @@ description).
 2. ~~Extension skeleton: both manifests, shim, a Duunitori ad page produces a score on the badge.~~ Done.
 3. ~~Popup with Save / Reject / Re-score, shortcuts, per-tab badge states.~~ Done (plus Undo).
 4. ~~Save queue with retry, offline state.~~ Done (alarm every minute, after any successful request, at startup).
-5. List-page highlighting on Duunitori (saved / rejected / seen, with scores) via the lookup endpoint.
+5. ~~List-page highlighting on Duunitori (saved / rejected / seen, with scores) via the lookup endpoint.~~ Done.
 6. Manual capture elsewhere: generic fallback, LinkedIn adapter, debug snapshot.
 7. Options page; later, the on-page panel.

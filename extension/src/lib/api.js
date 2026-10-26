@@ -57,6 +57,9 @@ export function createBackend({ getBaseUrl, fetchFn = (...args) => fetch(...args
     // Save: the full capture, which is the only time the ad text is stored.
     save: (job) => request('/api/jobs', json('POST', { ...job, status: 'saved' })),
 
+    // Which of these ad URLs the database already knows, and in what state (list-page highlighting). Read-only.
+    lookup: (urls) => request('/api/jobs/lookup', json('POST', { urls })),
+
     // Correct fields of a stored record (the popup's title/company form).
     update: (id, fields) => request(`/api/jobs/${id}`, json('PATCH', fields)),
 

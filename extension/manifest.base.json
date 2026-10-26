@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Hunter",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Scores job ads as you read them against your own profile, and keeps the ones that matter in your local Job Hunter.",
   "permissions": ["storage", "activeTab", "alarms", "scripting"],
   "host_permissions": ["http://jobs.test/*"],
@@ -9,6 +9,11 @@
     {
       "matches": ["*://duunitori.fi/tyopaikat/tyo/*", "*://www.duunitori.fi/tyopaikat/tyo/*"],
       "js": ["parsers/jsonld.js", "parsers/duunitori.js", "content/duunitori.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://duunitori.fi/tyopaikat*", "*://www.duunitori.fi/tyopaikat*"],
+      "js": ["content/duunitori-list.js"],
       "run_at": "document_idle"
     }
   ],

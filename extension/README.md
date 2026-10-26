@@ -4,8 +4,8 @@ Scores a Duunitori job ad against your profile as you read it, and shows the res
 and in the popup. Design and constraints: [`docs/EXTENSION_DESIGN.md`](../docs/EXTENSION_DESIGN.md).
 
 **Status: build steps 2 to 4, plus a generic reader for other sites.** Viewing an ad scores it; you can save it, reject it or undo, with keyboard
-shortcuts, and decisions made while the backend is down are queued and sent later. List highlighting, LinkedIn,
-a note field and the options page are not built yet.
+shortcuts, and decisions made while the backend is down are queued and sent later. Duunitori list pages mark the ads
+you already have. LinkedIn, a note field and the options page are not built yet.
 
 It only acts on the page you have open, in a visible tab. It makes no requests to job sites. The ad text is
 sent to your local backend (`http://jobs.test`) for scoring and is not kept there; the backend keeps a
@@ -27,7 +27,16 @@ npm run build        # writes dist/chrome and dist/firefox
 The backend must be running and reachable at `http://jobs.test` (change `backendUrl` in the extension's
 storage until the options page exists).
 
-## What you see
+## What you see on a list page
+
+On a Duunitori search or region page (`duunitori.fi/tyopaikat...`), ads your database already knows get a small badge
+next to the title: `Saved · 82`, `Applied`, `Rejected`, `Seen · 64` (or `In inbox` for old scraper rows). Ads it does
+not know get nothing. It reads the links on the page you are looking at and asks only your backend about them (one
+batch of up to 200 addresses at a time, through the background worker); it opens nothing, follows no link and makes no
+request to Duunitori. Ads that load as you scroll are picked up, and returning to the tab refreshes the badges. If
+the backend is down the page is left alone.
+
+## What you see on an ad
 
 Open a Duunitori ad (`duunitori.fi/tyopaikat/tyo/<ad>`) in a tab you are looking at:
 

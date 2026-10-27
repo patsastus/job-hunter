@@ -16,7 +16,7 @@ Getting job postings into your system reliably.
 A lightweight server running on your machine (e.g., Python FastAPI or a Go API).
 
 *   **Database:** A local SQLite database (`jobs.db`) storing job descriptions, URLs, status (New, Saved, Applied, Rejected), and LLM fit scores.
-*   **The AI Engine:** When a new job is ingested, the backend reads your local `cv_15_en.tex` and `projects.tex`, bundles them with the job description, and calls an LLM API (like OpenAI or Gemini) to generate a **Fit Score (1-100)** and a 2-sentence summary of *why* it fits.
+*   **The AI Engine:** When a new job is ingested, the backend reads your local CV and project files (LaTeX), bundles them with the job description, and calls an LLM API (like OpenAI or Gemini) to generate a **Fit Score (1-100)** and a 2-sentence summary of *why* it fits.
 *   **The Generator:** An endpoint that, when triggered, generates a tailored Cover Letter and a tweaked LaTeX CV, and automatically compiles them using `pdflatex` in a temporary local folder.
 
 ## 3. The Dashboard (Local UI)

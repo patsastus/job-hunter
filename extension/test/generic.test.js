@@ -165,30 +165,30 @@ test('a page with nothing recognisable reports exactly what is missing', () => {
   assert.equal(quality.confidence, 'low');
 });
 
-// --- a real page: Hive Helsinki's job board (Yoast WebPage data, labelled facts, a sidebar) -----
+// --- a board page: WebPage data but no JobPosting, labelled facts, a sidebar (synthetic, modelled on a real one) ---
 
-const HIVE_URL = 'https://www.hive.fi/hire/offer/junior-coder-tester/';
-const hive = () => readFixture('real-hive-offer.html', { url: HIVE_URL });
+const BOARD_URL = 'https://www.boardexample.invalid/hire/offer/junior-coder-tester/';
+const board = () => readFixture('board-offer.html', { url: BOARD_URL });
 
-test('real page: the employer, location and posting date come from the labelled markup, not the board name', () => {
-  const { job } = hive();
+test('board page: the employer, location and posting date come from the labelled markup, not the board name', () => {
+  const { job } = board();
   assert.equal(job.title, 'Junior Coder/Tester');
-  assert.equal(job.company, 'Qurios Oy', 'the employer, not "hive.fi" (the board)');
+  assert.equal(job.company, 'Example Learning Oy', 'the employer, not "boardexample.invalid" (the board)');
   assert.equal(job.location, 'Helsinki, Uusimaa, Finland');
   assert.equal(job.jobType, 'Internship, Hybrid');
   assert.equal(job.published, '22.10.2026');
   assert.equal(job.deadline, '', '"Open application" is not a date');
 });
 
-test('real page: a plain, short job ad is not mistaken for a non-job', () => {
-  const { quality } = hive();
+test('board page: a plain, short job ad is not mistaken for a non-job', () => {
+  const { quality } = board();
   assert.notEqual(quality.confidence, 'low');
   assert.equal(quality.confidence, 'medium', 'no JobPosting data, but the address, title and labelled facts all say job');
 });
 
-test('real page: the prose is kept clean and the sidebar facts are added for the scorer', () => {
-  const { job } = hive();
-  assert.match(job.descriptionSnippet, /^About the Role\n\nGreetings Hivers!/);
+test('board page: the prose is kept clean and the sidebar facts are added for the scorer', () => {
+  const { job } = board();
+  assert.match(job.descriptionSnippet, /^About the Role\n\nGreetings future colleagues!/);
   assert.match(job.descriptionSnippet, /internship candidate who can handle mainly html and Javascript/);
   assert.match(job.descriptionSnippet, /Role type: Internship/);
   assert.match(job.descriptionSnippet, /Working hours: Flexible \/ To be agreed/);
@@ -199,14 +199,14 @@ test('real page: the prose is kept clean and the sidebar facts are added for the
   }
 });
 
-test('real page: only the genuinely uncertain fields are called guesses', () => {
-  const { quality } = hive();
+test('board page: only the genuinely uncertain fields are called guesses', () => {
+  const { quality } = board();
   assert.deepEqual(quality.guessed, ['company'], 'the company came from a class name, so it is shown for confirmation; the rest was read from labelled markup');
   assert.deepEqual(quality.missing, []);
 });
 
-test('real page: the sidebar contact address is not scraped into any field', () => {
-  const text = JSON.stringify(hive().job);
+test('board page: the sidebar contact address is not scraped into any field', () => {
+  const text = JSON.stringify(board().job);
   assert.equal(/@/.test(text.replace(/apply@example\.invalid/g, '')), false);
 });
 

@@ -11,7 +11,7 @@ test('the two manifests differ only where the browsers differ', async () => {
   assert.deepEqual(chrome.background, { service_worker: 'background.js', type: 'module' });
   assert.deepEqual(firefox.background, { scripts: ['background.js'], type: 'module' });
   assert.equal(chrome.browser_specific_settings, undefined);
-  assert.equal(firefox.browser_specific_settings.gecko.id, 'job-hunter@nraatika.local');
+  assert.equal(firefox.browser_specific_settings.gecko.id, 'job-hunter@example.invalid');
   const strip = ({ background, browser_specific_settings, content_security_policy, action, ...rest }) => rest;
   assert.deepEqual(strip(chrome), strip(firefox));
 });

@@ -13,7 +13,7 @@ export const TARGETS = {
   },
   firefox: {
     background: { scripts: ['background.js'], type: 'module' },
-    browser_specific_settings: { gecko: { id: 'job-hunter@nraatika.local', strict_min_version: '128.0' } },
+    browser_specific_settings: { gecko: { id: 'job-hunter@example.invalid', strict_min_version: '128.0' } },
     // Firefox's default policy for Manifest V3 extension pages includes `upgrade-insecure-requests`, which silently
     // rewrites every http:// request the extension makes to https:// (loopback addresses are exempt, host names are
     // not). The backend is plain http on a local host name (http://jobs.test), so the upgraded request hits a TLS

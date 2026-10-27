@@ -20,10 +20,11 @@ services:
     volumes:
       - ./backend:/app
       - /app/.venv # hide a host-side .venv from the container (uvicorn's reloader would poll thousands of its files)
-      - /home/nraatika/projects/obsidian-vault/HiveNotes:/vault # Mount Obsidian vault for application notes
+      - ${VAULT_DIR:-./vault}:/vault # Mount Obsidian vault for application notes (set VAULT_DIR in .env)
     environment:
       - PYTHONUNBUFFERED=1
       - VAULT_PATH=/vault
+      - OBSIDIAN_VAULT_NAME=${OBSIDIAN_VAULT_NAME:-vault}
 
   scraper:
     build: 

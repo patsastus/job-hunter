@@ -1,6 +1,6 @@
 export const DEFAULT_SETTINGS = {
   backendUrl: 'http://jobs.test',
-  autoScore: true, // score an ad as soon as its tab is visible; off = only when asked
+  autoScore: true, //false = only when asked
 };
 
 export function createSettings(area) {

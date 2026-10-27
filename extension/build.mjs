@@ -14,15 +14,9 @@ export const TARGETS = {
   firefox: {
     background: { scripts: ['background.js'], type: 'module' },
     browser_specific_settings: { gecko: { id: 'job-hunter@nraatika.local', strict_min_version: '128.0' } },
-    // Firefox's default policy for Manifest V3 extension pages includes `upgrade-insecure-requests`, which silently
-    // rewrites every http:// request the extension makes to https:// (loopback addresses are exempt, host names are
-    // not). The backend is plain http on a local host name (http://jobs.test), so the upgraded request hits a TLS
-    // handshake it cannot complete and fails with an opaque "NetworkError". Stating the policy explicitly, without that
-    // directive, restores plain-http requests. Chrome's default has no such directive, so it needs nothing.
+    // explicit CSP needed to bypass upgrade to https for localhost alias jobs.test
     content_security_policy: { extension_pages: "script-src 'self'; object-src 'self';" },
-    // Firefox puts a new extension's button in the puzzle-piece menu unless it asks for the toolbar. Firefox-only
-    // key (Chrome would warn about it); it only decides the default for a fresh install, so a button the user has
-    // already moved or unpinned stays where they put it.
+    // Firefox puts a new extension's button in the puzzle-piece menu unless it asks for the toolbar.
     action: { default_area: 'navbar' },
   },
 };

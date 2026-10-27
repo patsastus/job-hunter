@@ -81,8 +81,7 @@ It is honest about doubt:
 
 Known limits: LinkedIn pages have no structured data and heavy markup, so the generic read will be rough there (a
 dedicated adapter is planned); pages that load their text lazily may yield little until the text is on screen (select it,
-then read); the fixtures are mostly synthetic. One real page (a Hive Helsinki job offer, `real-hive-offer.html`, with scripts and the
-contact address removed) shaped the labelled-facts and job-ad-evidence rules; how well it does on the other sites you use
+then read); the fixtures are synthetic. One of them (`board-offer.html`, modelled on a real job-board page) shaped the labelled-facts and job-ad-evidence rules; how well it does on the other sites you use
 is still the open question.
 
 ## Toolbar button

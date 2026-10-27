@@ -18,7 +18,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "job-scraper@nraatika.local",
+      "id": "job-scraper@example.invalid",
       "strict_min_version": "128.0"
     }
   }

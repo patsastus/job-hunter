@@ -6,3 +6,5 @@ __pycache__/
 docker-compose.override.yml
 .pytest_cache/
 .venv/
+.claude/
+vault/

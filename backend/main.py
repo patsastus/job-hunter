@@ -24,6 +24,8 @@ import skills_extractor
 from database import engine, SessionLocal
 
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault" if os.path.exists("/vault") else os.path.expanduser("~/vault"))
+# The vault name as Obsidian knows it, used to build the obsidian:// link to a new application note
+OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", "vault")
 
 # Create database tables, then bring older databases up to the current columns
 models.Base.metadata.create_all(bind=engine)
@@ -299,9 +301,9 @@ contact_email: ""
     db.commit()
     db.refresh(db_job)
 
-    # Generate Obsidian URI: obsidian://open?vault=HiveNotes&file=Job%20Applications/Active/{safe_encoded_filename}
+    # Generate Obsidian URI: obsidian://open?vault={OBSIDIAN_VAULT_NAME}&file=Job%20Applications/Active/{safe_encoded_filename}
     encoded_file_path = urllib.parse.quote(f"Job Applications/Active/{filename.removesuffix('.md')}")
-    obsidian_uri = f"obsidian://open?vault=HiveNotes&file={encoded_file_path}"
+    obsidian_uri = f"obsidian://open?vault={urllib.parse.quote(OBSIDIAN_VAULT_NAME)}&file={encoded_file_path}"
 
     return {
         "status": "ok",

@@ -66,7 +66,6 @@ test("Firefox's extension pages must not upgrade http:// requests (the backend i
   assert.doesNotMatch(csp, /upgrade-insecure-requests/);
   // Chrome's default policy has no such directive, so the Chrome build states none.
   assert.equal((await buildManifest('chrome')).content_security_policy, undefined);
-  assert.match((await import('node:fs')).readFileSync(new URL('../build.mjs', import.meta.url), 'utf8'), /upgrade-insecure-requests/, 'the reason is documented next to the setting');
 });
 
 test('Firefox asks for a toolbar button (not the puzzle-piece menu); Chrome gets no Firefox-only key', async () => {

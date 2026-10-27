@@ -13,8 +13,8 @@ export const TARGETS = {
   },
   firefox: {
     background: { scripts: ['background.js'], type: 'module' },
-    browser_specific_settings: { gecko: { id: 'job-hunter@nraatika.local', strict_min_version: '128.0' } },
-    // explicit CSP needed to bypass upgrade to https for localhost alias jobs.test
+    browser_specific_settings: { gecko: { id: 'job-hunter@example.invalid', strict_min_version: '128.0' } },
+    // explicit CSP, without upgrade-insecure-requests, so http://jobs.test is not upgraded to https
     content_security_policy: { extension_pages: "script-src 'self'; object-src 'self';" },
     // Firefox puts a new extension's button in the puzzle-piece menu unless it asks for the toolbar.
     action: { default_area: 'navbar' },
